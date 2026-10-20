@@ -231,7 +231,8 @@ response.headers["Cache-Control"] = "no-store"
 | Tests | `pytest` | `pytest -q` | the three endpoints and every security control still work |
 | Artifact | `actions/upload-artifact@v4` | — | the bandit report is downloadable from the run page |
 
-Last successful run: **https://github.com/kanloner/information_security/actions**
+Last successful run (commit `c36ed02`, all 9 steps green, 35 s):
+**[github.com/kanloner/information_security/actions/runs/39367332876](https://github.com/kanloner/information_security/actions/runs/39367332876)**
 
 ![GitHub Actions - SAST, SCA and tests all green](docs/screenshots/01-ci-green.png)
 
@@ -239,8 +240,13 @@ Last successful run: **https://github.com/kanloner/information_security/actions*
 
 ![pip-audit - no known vulnerabilities found](docs/screenshots/03-pip-audit.png)
 
+Both panels above are taken from that run: `02-bandit.png` shows the
+`security-reports` artifact (`bandit-report.txt`) uploaded by the workflow, and
+`03-pip-audit.png` shows the `SCA - pip-audit` step of the same job.
+
 The same three commands were also executed locally before the first online run, so the
-expected result of every step was known in advance:
+expected result of every step was known in advance (the local pytest run is shown in
+section 5):
 
 ```
 $ bandit -r ./app.py -f txt
