@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local database and secrets
+*.db
+*.db-journal
+.env
+
+# Tool output
+bandit-report.txt
+
+# macOS
+.DS_Store
+
+# Course reference material (not part of the submission)
+*.pdf
+Work\ 1\ CVE.csv
+
+# Local scratch
+.junk/
+.pytest-tmp/
+.workbuddy/

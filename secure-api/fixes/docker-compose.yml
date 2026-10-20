@@ -1,0 +1,14 @@
+services:
+  druid:
+    # CVE-2021-25646 is fixed in Apache Druid 0.20.1: the sampler endpoint no
+    # longer honours the empty-key override that re-enabled the JavaScript
+    # engine, so user-supplied JavaScript is never evaluated.
+    #
+    # The fix is applied by building a 0.20.1 image from the Dockerfile in this
+    # folder (the official image's distroless base cannot run nano-quickstart).
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cve-2021-25646-druid-fixed
+    ports:
+      - "8888:8888"

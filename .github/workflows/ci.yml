@@ -1,0 +1,54 @@
+name: security-ci
+
+# Runs on every push and on every pull request, as required by the lab manual.
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  sast-sca:
+    name: SAST + SCA + tests
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        # The project lives in secure-api/; the workflow must sit at the
+        # repository root because GitHub Actions only reads .github/workflows
+        # from there.
+        working-directory: secure-api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: secure-api/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install security tooling
+        run: pip install bandit pip-audit pytest
+
+      - name: SAST - bandit
+        run: bandit -r ./app.py -f txt -o bandit-report.txt
+
+      - name: SCA - pip-audit
+        run: pip-audit -r requirements.txt
+
+      - name: Functional and security tests
+        run: pytest -q
+
+      - name: Upload security report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: secure-api/bandit-report.txt
