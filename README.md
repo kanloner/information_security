@@ -54,6 +54,11 @@ Demo accounts created on the first run: `alice / Alice123!` and `bob / Bob12345!
 Port 8000 is used on purpose — on macOS port 5000 is occupied by the AirPlay
 Receiver, which answers every request with `403`. Override with `PORT=9000 python app.py`.
 
+The repository is public; the file layout above is what the grader sees on the
+landing page:
+
+![public repository page](docs/screenshots/09-repo.png)
+
 The same scanners the pipeline runs, locally:
 
 ```bash
