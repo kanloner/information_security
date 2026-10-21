@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app as api  # noqa: E402
+import create_user  # noqa: E402
 
 
 @pytest.fixture()
@@ -109,3 +110,14 @@ def test_security_headers_present(client):
     response = client.get("/api/data", headers=auth_header(get_token(client)))
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert "default-src 'none'" in response.headers["Content-Security-Policy"]
+
+
+def test_create_user_adds_a_working_account(client):
+    create_user.create_user("carol", "Carol123!", api.DB_PATH)
+
+    response = client.post("/auth/login", json={"username": "carol", "password": "Carol123!"})
+    assert response.status_code == 200
+    assert "access_token" in response.get_json()
+
+    with pytest.raises(ValueError):
+        create_user.create_user("dave", "short", api.DB_PATH)

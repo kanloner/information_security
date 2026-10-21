@@ -5,7 +5,10 @@ Three endpoints:
     GET  /api/data     -> list posts (JWT required, output-encoded)
     POST /api/data     -> create a post (JWT required)
 
-Security controls implemented here:
+The schema, the connection factory and the bcrypt hashing live in init_db.py;
+account management is the offline CLI in create_user.py. This module only
+contains the request handlers and the controls that protect them:
+
     * SQL injection: every statement is a constant SQL string with bound
       parameters ("?" placeholders). No user value is ever concatenated into
       SQL text, so the statement structure cannot be altered by input.
@@ -22,73 +25,47 @@ import datetime
 import html
 import os
 import secrets
-import sqlite3
 from functools import wraps
 
 import bcrypt
 import jwt
 from flask import Flask, g, jsonify, request
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+import init_db as database
 
 app = Flask(__name__)
 
 # Never hardcode a secret: it is read from the environment, and a random one
 # is generated for local runs (which also keeps bandit's B105 check quiet).
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "app.db"))
+DB_PATH = database.db_path()
 
 JWT_ALGORITHM = "HS256"
 TOKEN_TTL_SECONDS = 1800
-BCRYPT_ROUNDS = 12
-MAX_FIELD_LEN = 200
+BCRYPT_ROUNDS = database.BCRYPT_ROUNDS
+MAX_FIELD_LEN = database.MAX_FIELD_LEN
 
 # The authentication scheme name, kept as a constant so the response field does
 # not look like a hardcoded credential to static analysers (bandit B105/B106).
 AUTH_SCHEME = "Bearer"
 
-# SQLite has to create (and later remove) a rollback journal next to the
-# database file. Filesystems that forbid that - read-only container layers,
-# some CI sandboxes - make every write fail with "disk I/O error". The mode is
-# therefore configurable; the statements below are fixed literals, never built
-# from input, so the setting cannot be abused.
-DB_JOURNAL_MODE = os.environ.get("DB_JOURNAL_MODE", "delete").lower()
-JOURNAL_PRAGMAS = {
-    "delete": "PRAGMA journal_mode=DELETE",
-    "memory": "PRAGMA journal_mode=MEMORY",
-    "wal": "PRAGMA journal_mode=WAL",
-}
-
 # Used to keep the failed-login path roughly constant-time, so an attacker
 # cannot tell "user does not exist" from "wrong password" by timing.
 _DUMMY_HASH = bcrypt.hashpw(b"dummy-password", bcrypt.gensalt(rounds=BCRYPT_ROUNDS))
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT UNIQUE NOT NULL,
-    password_hash BLOB NOT NULL,
-    created_at    TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS posts (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    author     TEXT NOT NULL,
-    title      TEXT NOT NULL,
-    body       TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-"""
 
 
 def utc_now():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def init_db(path=None):
+    """Create the schema for the configured database (used by tests and startup)."""
+    return database.init_db(path or DB_PATH)
+
+
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute(JOURNAL_PRAGMAS.get(DB_JOURNAL_MODE, JOURNAL_PRAGMAS["delete"]))
+        g.db = database.connect(DB_PATH)
     return g.db
 
 
@@ -99,41 +76,18 @@ def close_db(exception):
         db.close()
 
 
-def init_db(path=None):
-    """Create the schema and seed two demo users plus a couple of posts."""
-    target = path or DB_PATH
-    db = sqlite3.connect(target)
-    db.execute(JOURNAL_PRAGMAS.get(DB_JOURNAL_MODE, JOURNAL_PRAGMAS["delete"]))
-    db.executescript(SCHEMA)
-
-    if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-        for username, password in (("alice", "Alice123!"), ("bob", "Bob12345!")):
-            password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=BCRYPT_ROUNDS))
-            db.execute(
-                "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                (username, password_hash, utc_now().isoformat()),
-            )
-        db.execute(
-            "INSERT INTO posts (author, title, body, created_at) VALUES (?, ?, ?, ?)",
-            ("alice", "Hello", "First post from the seed data.", utc_now().isoformat()),
-        )
-        db.commit()
-
-    db.close()
-
-
 def require_jwt(view):
     """Reject any request that does not carry a valid, unexpired JWT."""
 
     @wraps(view)
     def wrapper(*args, **kwargs):
         header = request.headers.get("Authorization", "")
-        if not header.startswith("Bearer "):
+        if not header.startswith(AUTH_SCHEME + " "):
             return jsonify(error="missing bearer token"), 401
 
         try:
             payload = jwt.decode(
-                header[len("Bearer "):].strip(),
+                header[len(AUTH_SCHEME) + 1:].strip(),
                 SECRET_KEY,
                 algorithms=[JWT_ALGORITHM],  # whitelist: no "none", no confusion
             )

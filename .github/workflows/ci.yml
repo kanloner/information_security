@@ -7,19 +7,20 @@ permissions:
   contents: read
 
 jobs:
-  sast-sca:
-    name: SAST + SCA + tests
+  tests-sast-sca:
+    name: Tests, SAST, and SCA
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     defaults:
       run:
-        # The project lives in secure-api/; the workflow must sit at the
+        # The project lives in secure-api/; the workflow itself must sit at the
         # repository root because GitHub Actions only reads .github/workflows
         # from there.
         working-directory: secure-api
 
     steps:
-      - name: Checkout
+      - name: Check out project
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -29,26 +30,170 @@ jobs:
           cache: pip
           cache-dependency-path: secure-api/requirements.txt
 
-      - name: Install dependencies
+      - name: Install application and security tools
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install bandit pip-audit pytest
+          python -c "import flask, jwt, bcrypt; print('runtime imports ok')"
+          bandit --version | head -n 1
+          pip-audit --version
 
-      - name: Install security tooling
-        run: pip install bandit pip-audit pytest
+      # An ephemeral secret and a database in the runner's temp directory, so a
+      # developer's local configuration can never leak into CI and the job
+      # leaves no state behind on the runner.
+      - name: Prepare isolated CI configuration
+        run: |
+          mkdir -p reports
+          umask 077
+          {
+            printf "SECRET_KEY='%s'\n" "$(python -c 'import secrets; print(secrets.token_hex(32))')"
+            printf "DB_PATH='%s'\n" "$RUNNER_TEMP/ci.db"
+            printf "DB_JOURNAL_MODE='%s'\n" "memory"
+          } > .env.ci
+          echo "ephemeral configuration written to .env.ci"
+          sed 's/^SECRET_KEY=.*/SECRET_KEY=<generated, 64 hex characters>/' .env.ci
 
-      - name: SAST - bandit
-        run: bandit -r ./app.py -f txt -o bandit-report.txt
+      - name: Run API and security regression tests
+        run: |
+          set -a; . ./.env.ci; set +a
 
-      - name: SCA - pip-audit
-        run: pip-audit -r requirements.txt
+          # 1. The regression suite: one test per security property.
+          python -m pytest -q --junitxml=reports/pytest.xml
 
-      - name: Functional and security tests
-        run: pytest -q
+          # 2. Smoke test of the running service: the suite above uses Flask's
+          #    test client, this proves the real server answers the same way.
+          python app.py > reports/server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 
-      - name: Upload security report
+          CODE=""
+          for _ in $(seq 1 40); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/data || true)
+            if [ "$CODE" = "401" ]; then break; fi
+            sleep 0.5
+          done
+          echo "GET /api/data without a token -> HTTP $CODE (expected 401)"
+          if [ "$CODE" != "401" ]; then echo "::error::access control failed without a token"; exit 1; fi
+
+          TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"alice","password":"Alice123!"}' \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+          echo "POST /auth/login -> token issued (${#TOKEN} characters)"
+
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/data)
+          echo "GET /api/data with a token -> HTTP $CODE (expected 200)"
+          if [ "$CODE" != "200" ]; then echo "::error::authorised access failed with a valid token"; exit 1; fi
+
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000/api/data?q=%27%20OR%201%3D1--" \
+            -H "Authorization: Bearer $TOKEN")
+          echo "GET /api/data?q=' OR 1=1-- -> HTTP $CODE (payload treated as a literal)"
+          if [ "$CODE" != "200" ]; then echo "::error::injection payload caused a server error"; exit 1; fi
+
+      - name: SAST - scan application source with Bandit
+        run: |
+          python -m bandit app.py init_db.py create_user.py -f json -o reports/bandit.json
+          echo "bandit report written to reports/bandit.json"
+
+      - name: SCA - audit application dependencies
+        run: |
+          python -m pip_audit -r requirements.txt -f json -o reports/pip-audit.json
+          python -m pip_audit -r requirements.txt --progress-spinner off
+
+      # Turns the three machine-readable reports into one human-readable
+      # conclusion, both in the job log and on the run's Summary page.
+      - name: Summarize results
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          reports = pathlib.Path("reports")
+          lines = ["## Tests, SAST, and SCA - conclusion", ""]
+          blocked = False
+
+          # ---- SAST: bandit -------------------------------------------------
+          bandit_file = reports / "bandit.json"
+          if bandit_file.exists():
+              results = json.loads(bandit_file.read_text()).get("results", [])
+              by_severity = {}
+              for issue in results:
+                  key = issue.get("issue_severity", "UNKNOWN")
+                  by_severity[key] = by_severity.get(key, 0) + 1
+              detail = ", ".join(f"{k}: {v}" for k, v in sorted(by_severity.items())) or "none"
+              lines.append(f"- **bandit (SAST)**: {len(results)} finding(s) - {detail}")
+              for issue in results[:5]:
+                  location = f"{issue.get('filename')}:{issue.get('line_number')}"
+                  lines.append(
+                      f"  - `{issue.get('test_id')}` {issue.get('issue_severity')} - "
+                      f"{issue.get('issue_text')} ({location})"
+                  )
+              blocked = blocked or bool(results)
+          else:
+              lines.append("- **bandit (SAST)**: report missing")
+              blocked = True
+
+          # ---- SCA: pip-audit ----------------------------------------------
+          audit_file = reports / "pip-audit.json"
+          if audit_file.exists():
+              audit = json.loads(audit_file.read_text())
+              deps = audit.get("dependencies", []) if isinstance(audit, dict) else audit
+              vulns = []
+              for dep in deps:
+                  for vuln in dep.get("vulns") or []:
+                      vulns.append((dep.get("name"), vuln.get("id")))
+              lines.append(
+                  f"- **pip-audit (SCA)**: {len(deps)} pinned dependencies audited, "
+                  f"{len(vulns)} known vulnerability(ies)"
+              )
+              for name, vuln_id in vulns[:5]:
+                  lines.append(f"  - {vuln_id} in {name}")
+              blocked = blocked or bool(vulns)
+          else:
+              lines.append("- **pip-audit (SCA)**: report missing")
+              blocked = True
+
+          # ---- tests: pytest junit ------------------------------------------
+          junit_file = reports / "pytest.xml"
+          if junit_file.exists():
+              root = ET.parse(junit_file).getroot()
+              suite = root.find("testsuite") if root.tag == "testsuites" else root
+              get = lambda name: int(suite.get(name, 0) or 0)
+              tests, failures, errors = get("tests"), get("failures"), get("errors")
+              seconds = sum(float(s.get("time", 0) or 0) for s in root.iter("testcase"))
+              lines.append(
+                  f"- **pytest**: {tests} tests, {failures} failures, {errors} errors "
+                  f"({seconds:.1f}s of test time)"
+              )
+              blocked = blocked or bool(failures or errors)
+          else:
+              lines.append("- **pytest**: report missing")
+              blocked = True
+
+          lines.append("")
+          lines.append(
+              "**Conclusion:** every control held - the build is safe to merge."
+              if not blocked
+              else "**Conclusion:** at least one check failed - the build must not be merged."
+          )
+
+          text = "\n".join(lines) + "\n"
+          print(text)
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              pathlib.Path(summary).write_text(text, encoding="utf-8")
+          PY
+
+      - name: Save test and security reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-reports
-          path: secure-api/bandit-report.txt
+          path: secure-api/reports/
+          if-no-files-found: warn
+          retention-days: 14

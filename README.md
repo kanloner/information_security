@@ -23,10 +23,12 @@ it and proving that the same attack no longer works.
 ├── README.md                        # this file - project, security, CI/CD and CVE write-up
 ├── .github/workflows/ci.yml         # SAST + SCA + tests on every push / pull request
 ├── secure-api/
-│   ├── app.py                       # the whole API (3 endpoints + auth middleware)
+│   ├── app.py                       # HTTP handlers, JWT middleware, response headers
+│   ├── init_db.py                   # schema, connection factory, demo seed data
+│   ├── create_user.py               # offline account CLI (bcrypt, no HTTP route)
 │   ├── requirements.txt             # pinned runtime dependencies
 │   ├── demo.sh                      # end-to-end demo used for the evidence below
-│   ├── tests/test_api.py            # 11 functional + security tests
+│   ├── tests/test_api.py            # 12 functional + security tests
 │   ├── cve/CVE-2021-25646/          # vulnerable environment (Druid 0.20.0), reproduce.sh, verify_fix.sh
 │   └── fixes/                       # patched environment (Druid 0.20.1) - the "folder with fixes"
 ├── docs/screenshots/                # evidence used in the report
@@ -46,10 +48,20 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
+python init_db.py                 # create the schema and the demo data
 python app.py                     # serves http://127.0.0.1:8000
 ```
 
-Demo accounts created on the first run: `alice / Alice123!` and `bob / Bob12345!`.
+`python init_db.py` is optional — the server calls the same function on startup.
+To add an account without restarting anything:
+
+```bash
+python create_user.py carol --password 'Carol123!'   # or APP_USER_PASSWORD=... / interactive prompt
+```
+
+Accounts are only created through that CLI, never over HTTP, so there is no
+registration endpoint to attack. Demo accounts created on the first run are
+`alice / Alice123!` and `bob / Bob12345!`.
 
 Port 8000 is used on purpose — on macOS port 5000 is occupied by the AirPlay
 Receiver, which answers every request with `403`. Override with `PORT=9000 python app.py`.
@@ -62,8 +74,9 @@ landing page:
 The same scanners the pipeline runs, locally:
 
 ```bash
-pytest -q
-bandit -r ./app.py
+mkdir -p reports
+pytest -q --junitxml=reports/pytest.xml
+bandit app.py init_db.py create_user.py -f json -o reports/bandit.json
 pip-audit -r requirements.txt
 ```
 
@@ -279,7 +292,7 @@ finding was silenced.
 
 ## 5. Tests
 
-`secure-api/tests/test_api.py` — 11 tests, one per security property rather than
+`secure-api/tests/test_api.py` — 12 tests, one per security property rather than
 one per function:
 
 | Test | Property protected |
@@ -295,8 +308,9 @@ one per function:
 | `test_create_requires_token` | access control on writes |
 | `test_create_validates_empty_title` | input validation |
 | `test_security_headers_present` | response hardening |
+| `test_create_user_adds_a_working_account` | account provisioning + password policy |
 
-![pytest - 11 passed](docs/screenshots/10-pytest.png)
+![pytest - 12 passed](docs/screenshots/10-pytest.png)
 
 ---
 

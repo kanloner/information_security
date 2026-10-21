@@ -12,6 +12,11 @@ venv/
 
 # Tool output
 bandit-report.txt
+reports/
+.cache/
+.runner-tmp/
+.env.ci
+server.log
 
 # macOS
 .DS_Store
