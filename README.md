@@ -240,35 +240,67 @@ response.headers["Cache-Control"] = "no-store"
 
 ## 4. CI/CD pipeline with security scanners
 
-`.github/workflows/ci.yml` runs on **every push and every pull request**:
+`.github/workflows/ci.yml` runs on **every push and every pull request**. The job is
+called **Tests, SAST, and SCA** and its steps mirror what a reviewer would do by hand:
 
-| Stage | Tool | Command | What it proves |
-|---|---|---|---|
-| SAST | `bandit` | `bandit -r ./app.py -f txt -o bandit-report.txt` | no `eval`, `subprocess`, hardcoded secrets, weak crypto or string-built SQL |
-| SCA | `pip-audit` | `pip-audit -r requirements.txt` | no pinned dependency with a known CVE |
-| Tests | `pytest` | `pytest -q` | the three endpoints and every security control still work |
-| Artifact | `actions/upload-artifact@v4` | — | the bandit report is downloadable from the run page |
+| Step | What it actually does |
+|---|---|
+| Check out project / Set up Python | checkout, Python 3.11 with a pip cache |
+| Install application and security tools | `pip install -r requirements.txt bandit pip-audit pytest`, then verifies the runtime imports and prints both scanner versions |
+| Prepare isolated CI configuration | writes `.env.ci` with a throwaway `SECRET_KEY`, a database in `$RUNNER_TEMP` and memory journal mode — a developer's local configuration can never leak into CI, and nothing is left on the runner |
+| Run API and security regression tests | `pytest --junitxml=reports/pytest.xml`, then a **live smoke test** of the running server: 401 without a token → login → 200 with the token → injection payload returns 200 and no rows |
+| SAST - scan application source with Bandit | `python -m bandit app.py init_db.py create_user.py -f json -o reports/bandit.json` |
+| SCA - audit application dependencies | `python -m pip_audit -r requirements.txt -f json -o reports/pip-audit.json` |
+| Summarize results | reads the three machine-readable reports and writes **one written conclusion** to the run's Summary page; the step fails the build if any control broke |
+| Save test and security reports | uploads `secure-api/reports/` (4 files) as the `security-reports` artifact |
 
-Last successful run (commit `c36ed02`, all 9 steps green, 35 s):
-**[github.com/kanloner/information_security/actions/runs/39367332876](https://github.com/kanloner/information_security/actions/runs/39367332876)**
+Every step is named and its log is readable without opening the YAML, because the
+pipeline is meant to be *audited*, not just executed. The smoke test matters: the unit
+tests use Flask's test client, which bypasses the socket, so "12 green tests" alone
+would not prove that the deployed server enforces the same rules.
 
-![GitHub Actions - SAST, SCA and tests all green](docs/screenshots/01-ci-green.png)
+Last successful run (commit `ab2f068`, all 13 rows green, 39 s):
+**[github.com/kanloner/information_security/actions/runs/39544635930](https://github.com/kanloner/information_security/actions/runs/39544635930)**
+
+The run ends with a conclusion instead of a wall of log lines:
+
+```
+## Tests, SAST, and SCA - conclusion
+
+- **bandit (SAST)**: 0 finding(s) - none
+- **pip-audit (SCA)**: 9 pinned dependencies audited, 0 known vulnerability(ies)
+- **pytest**: 12 tests, 0 failures, 0 errors (9.3s of test time)
+
+**Conclusion:** every control held - the build is safe to merge.
+```
+
+and the behavioural part of that conclusion is visible in the step above it:
+
+```
+12 passed in 9.70s
+GET /api/data without a token -> HTTP 401 (expected 401)
+POST /auth/login -> token issued (147 characters)
+GET /api/data with a token -> HTTP 200 (expected 200)
+GET /api/data?q=' OR 1=1-- -> HTTP 200 (payload treated as a literal)
+```
+
+![GitHub Actions - Tests, SAST and SCA all green](docs/screenshots/01-ci-green.png)
 
 ![bandit - no issues identified](docs/screenshots/02-bandit.png)
 
 ![pip-audit - no known vulnerabilities found](docs/screenshots/03-pip-audit.png)
 
-Both panels above are taken from that run: `02-bandit.png` shows the
-`security-reports` artifact (`bandit-report.txt`) uploaded by the workflow, and
-`03-pip-audit.png` shows the `SCA - pip-audit` step of the same job.
+`02-bandit.png` shows the `security-reports` artifact of a pipeline run and
+`03-pip-audit.png` the SCA step of the same job. They were captured before the job was
+split into the ten named steps listed above, so the labels inside them are shorter than
+that list; the log of the current run is quoted in full above.
 
 The same three commands were also executed locally before the first online run, so the
-expected result of every step was known in advance (the local pytest run is shown in
-section 5):
+expected result of every step was known in advance:
 
 ```
-$ bandit -r ./app.py -f txt
-	Total lines of code: 177
+$ bandit app.py init_db.py create_user.py -f txt
+	Total lines of code: 286
 	Total lines skipped (#nosec): 0
 	No issues identified.
 
@@ -276,17 +308,17 @@ $ pip-audit -r requirements.txt
 No known vulnerabilities found
 
 $ pytest -q
-...........                                                              [100%]
-11 passed in 9.61s
+............                                                             [100%]
+12 passed in 8.57s
 ```
 
 One finding had to be handled during the work: the first scan reported B105/B106
 ("possible hardcoded password: 'Bearer'") on the OAuth2 `token_type` field, because
 bandit flags any key whose name contains `token` when bound to a string literal.
 Suppressing it with `#nosec` would have hidden the class of issue the scanner exists to
-find, so the value was moved into the named constant `AUTH_SCHEME`. The warning
-disappeared and the scan reports **zero skipped lines** — itself evidence that no
-finding was silenced.
+find, so the value was moved into the named constant `AUTH_SCHEME` — and later into a
+shared module, so the three scanned files stay at **zero skipped lines**. That number is
+itself evidence that no finding was silenced.
 
 ---
 

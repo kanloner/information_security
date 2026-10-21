@@ -5,14 +5,28 @@ Writing those parts directly keeps the build hermetic (no temp files, no
 dependency on python-docx) while still producing a file Word/WPS opens natively.
 """
 
+import glob
 import os
+import struct
 import zipfile
 from xml.sax.saxutils import escape
 
 A4_W, A4_H = 11906, 16838
 MARGIN_SIDE, MARGIN_TOP, MARGIN_BOTTOM = 1418, 1418, 1418
 
+# Text area is 9070 twips wide (A4 minus two side margins). Figures are
+# centred inside it and never taller than a third of the page, so a screenshot
+# can never push a caption onto the next page on its own.
+MAX_IMG_W = 5_700_000   # EMU (about 6.2 in)
+MAX_IMG_H = 3_900_000   # EMU (about 4.3 in)
+
 NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+# (relationship id, file name, path, width EMU, height EMU), filled by shot()
+IMAGES = []
+SHOT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "docs", "screenshots")
+
 
 
 def run(text, bold=False, italic=False, mono=False, size=None, color=None):
@@ -90,9 +104,77 @@ def code(lines):
     return "".join(out)
 
 
-def shot(caption):
-    return para(f"[Screenshot placeholder] {caption}", italic=True, size=18,
-                color="808080", spacing_before=60, spacing_after=160, align="center")
+def png_size(path):
+    with open(path, "rb") as handle:
+        head = handle.read(24)
+    if head[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"not a PNG: {path}")
+    return struct.unpack(">II", head[16:24])
+
+
+def fit_image(path):
+    """Return (width, height) in EMU, preserving the aspect ratio."""
+    px_w, px_h = png_size(path)
+    width = float(MAX_IMG_W)
+    height = width * px_h / px_w
+    if height > MAX_IMG_H:
+        height = float(MAX_IMG_H)
+        width = height * px_w / px_h
+    return int(width), int(height)
+
+
+def find_screenshot(caption):
+    """Map '... (screenshot 04)' to docs/screenshots/04-*.png."""
+    marker = "screenshot "
+    key = caption.rstrip(")").split(marker)[-1].strip() if marker in caption else ""
+    if not key:
+        return None
+    prefix = key.zfill(2) if key.isdigit() else key
+    matches = sorted(glob.glob(os.path.join(SHOT_DIR, f"{prefix}-*.png")))
+    return matches[0] if matches else None
+
+
+def shot(caption, image=None):
+    """Centred figure with a caption underneath.
+
+    When the image cannot be resolved the caption is still written, marked as a
+    placeholder, so a missing file is visible in the document instead of silent.
+    """
+    path = image or find_screenshot(caption)
+    if not path or not os.path.exists(path):
+        return para(f"[Screenshot placeholder] {caption}", italic=True, size=18,
+                    color="808080", spacing_before=60, spacing_after=160, align="center")
+
+    index = len(IMAGES) + 1
+    rel_id = f"rId{100 + index}"
+    cx, cy = fit_image(path)
+    IMAGES.append((rel_id, f"image{index}.png", path, cx, cy))
+
+    drawing = (
+        "<w:p><w:pPr><w:jc w:val=\"center\"/>"
+        "<w:spacing w:before=\"120\" w:after=\"40\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>"
+        "<w:r><w:drawing>"
+        "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">"
+        f"<wp:extent cx=\"{cx}\" cy=\"{cy}\"/>"
+        "<wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>"
+        f"<wp:docPr id=\"{index}\" name=\"Picture {index}\"/>"
+        "<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/>"
+        "</wp:cNvGraphicFramePr>"
+        "<a:graphic>"
+        "<a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">"
+        "<pic:pic>"
+        f"<pic:nvPicPr><pic:cNvPr id=\"{index}\" name=\"image{index}.png\"/>"
+        "<pic:cNvPicPr/></pic:nvPicPr>"
+        f"<pic:blipFill><a:blip r:embed=\"{rel_id}\"/>"
+        "<a:stretch><a:fillRect/></a:stretch></pic:blipFill>"
+        "<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/>"
+        f"<a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm>"
+        "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr>"
+        "</pic:pic></a:graphicData></a:graphic></wp:inline>"
+        "</w:drawing></w:r></w:p>"
+    )
+    return drawing + para(caption, italic=True, size=17, color="6E6E6E",
+                          spacing_before=0, spacing_after=200, align="center")
 
 
 def table(rows, widths, header=True):
@@ -128,6 +210,7 @@ def page_break():
 CONTENT_TYPES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="png" ContentType="image/png"/>
 <Default Extension="xml" ContentType="application/xml"/>
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
@@ -224,8 +307,21 @@ def document_xml(body_xml):
             '<w:cols w:space="708"/></w:sectPr>')
     return (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             f'<w:document xmlns:w="{NS_W}" '
-            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+            'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
             f"<w:body>{body_xml}{sect}</w:body></w:document>")
+
+
+def doc_rels():
+    links = "".join(
+        f'<Relationship Id="{rel_id}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        f'Target="media/{name}"/>'
+        for rel_id, name, _path, _cx, _cy in IMAGES
+    )
+    return DOC_RELS.replace("</Relationships>", links + "</Relationships>")
 
 
 def build(body_xml, out_path):
@@ -233,10 +329,12 @@ def build(body_xml, out_path):
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", CONTENT_TYPES)
         z.writestr("_rels/.rels", ROOT_RELS)
-        z.writestr("word/_rels/document.xml.rels", DOC_RELS)
+        z.writestr("word/_rels/document.xml.rels", doc_rels())
         z.writestr("word/document.xml", document_xml(body_xml))
         z.writestr("word/styles.xml", styles_xml())
         z.writestr("word/footer1.xml", footer_xml())
         z.writestr("docProps/core.xml", CORE)
         z.writestr("docProps/app.xml", APP)
+        for _rel_id, name, path, _cx, _cy in IMAGES:
+            z.write(path, f"word/media/{name}")
     return out_path
