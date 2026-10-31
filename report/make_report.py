@@ -23,6 +23,9 @@ Conventions used below
     shot("... (screenshot NN)")
                        embeds docs/screenshots/NN-*.png and writes the caption
                        underneath; the number in the text is the file prefix
+    dia("dNN-name.png", "Figure N — ...")
+                       the same, for the flowcharts that report/diagrams.py
+                       draws into docs/diagrams/
 """
 
 import os
@@ -38,6 +41,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from docx_builder import (  # noqa: E402
     body, bullet, build, code, h1, h2, page_break, para, shot, table,
 )
+
+# ------------------------------------------------------------------ figures
+# The flowcharts are drawn by report/diagrams.py into docs/diagrams/. They go
+# through the same shot() as the screenshots, so a diagram and a screenshot are
+# scaled, centred and captioned identically - the only difference is where the
+# PNG comes from.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIAGRAM_DIR = os.path.join(ROOT, "docs", "diagrams")
+
+
+def dia(name, caption):
+    """Insert one generated flowchart with the caption underneath."""
+    path = os.path.join(DIAGRAM_DIR, name)
+    # A missing diagram is written into the document instead of being skipped,
+    # for the same reason a missing screenshot is: a silently shorter report is
+    # discovered after submission, an obvious placeholder on the first read.
+    if not os.path.exists(path):
+        return para(f"[Diagram missing] {caption}", italic=True, size=18,
+                    color="808080", spacing_before=60, spacing_after=160, align="center")
+    return shot(caption, image=path)
 
 # `B` is the document under construction: a list of XML fragments that is
 # joined once at the end. Appending strings is O(1) amortised; repeated
@@ -68,16 +91,17 @@ add(page_break())
 # rest of the document is evidence for.
 add(h1("1. Purpose of the work"))
 add(body(
-    "The work covers the full security lifecycle of a small backend service: designing an API that "
-    "resists the most common classes of attack from the OWASP Top 10, automating the detection of "
-    "defects with a CI/CD pipeline, and then working with a real, publicly disclosed vulnerability - "
-    "reproducing it in an isolated container, explaining why it exists in the source code, patching "
-    "the environment and proving that the attack no longer succeeds."))
+    "A small backend service is taken through its whole security lifecycle: an API that resists the "
+    "common attacks from the OWASP Top 10, a pipeline that checks it on every commit, and a real, "
+    "publicly disclosed vulnerability that is reproduced in an isolated container, explained from the "
+    "source, patched and then shown to be unreachable. Figure 1 is the map of that work, and the "
+    "sections of this report follow it left to right."))
+add(dia("d01-lifecycle.png",
+        "Figure 1 — The four stages of the work and what each stage produces"))
 add(body(
-    "The practical goal is therefore twofold. On the defensive side, a working REST API with "
-    "authentication, authorisation, injection protection and output encoding. On the offensive and "
-    "analytical side, the ability to take a CVE identifier and turn it into a reproducible, verifiable "
-    "experiment - which is the day-to-day skill of a penetration tester or a SOC analyst."))
+    "The practical goal is therefore twofold: a working REST API with authentication, injection "
+    "protection and output encoding, and the ability to turn a CVE identifier into a reproducible, "
+    "verifiable experiment - the day-to-day skill of a penetration tester or a SOC analyst."))
 
 # ---------------------------------------------------------------- 2 stack
 # Tables here use widths that sum to the 9070-twip text column; the numbers are
@@ -97,10 +121,9 @@ add(table([
     ["create_user.py", "offline account CLI - accounts are never created over HTTP"],
 ], [2400, 6670]))
 add(body(
-    "The split is not cosmetic. It keeps the request-handling code small enough to review line by "
-    "line, it gives the static analyser three real source files instead of one monolith, and it "
-    "removes the registration route that would otherwise be the most attractive target in the "
-    "service: an account can only be created by someone who already has shell access."))
+    "The split is not cosmetic: it keeps the request-handling code reviewable line by line, gives the "
+    "analyser three real files, and removes the registration route that would otherwise be the most "
+    "attractive target - an account can only be created by someone who already has shell access."))
 add(table([
     ["Component", "Choice", "Reason"],
     ["Language / framework", "Python 3.11+, Flask 3", "small surface, minimal ceremony"],
@@ -131,6 +154,10 @@ add(body(
     "The third endpoint was not added to fill a quota: it is the write side of the data model and it "
     "is what makes a stored-XSS demonstration possible. Without a write endpoint, XSS protection "
     "cannot be shown end to end, only asserted."))
+add(body(
+    "All three methods take the same path - one guard, one handler, one hardened response:"))
+add(dia("d02-request-path.png",
+        "Figure 2 — What happens to one authenticated request, including the fail-closed exit"))
 
 add(h2("3.1 Authentication endpoint"))
 add(code([
@@ -180,17 +207,17 @@ add(h1("4. Implemented security measures"))
 
 add(h2("4.1 Protection against SQL injection"))
 add(body(
-    "Every SQL statement is a constant string and every user value is passed as a bound parameter. "
-    "The database driver sends the statement and the values separately, so input can never change "
-    "the parse tree of the query - quoting, comments and UNION tricks lose their meaning."))
+    "Every SQL statement is a constant string and every user value is passed as a bound parameter, so "
+    "input can never change the parse tree of the query - quoting, comments and UNION tricks lose "
+    "their meaning."))
 add(code([
     'row = get_db().execute(',
     '    "SELECT username, password_hash FROM users WHERE username = ?", (username,)',
     ').fetchone()',
 ]))
 add(body(
-    "The search filter follows the same rule. The wildcards are added to the value, not to the "
-    "statement, which is the detail that is usually got wrong when a LIKE clause is introduced:"))
+    "The search filter follows the same rule - the wildcards are added to the value, not to the "
+    "statement, which is the detail usually got wrong when a LIKE clause is introduced:"))
 add(code([
     'pattern = f"%{query}%"',
     'rows = get_db().execute(',
@@ -199,9 +226,11 @@ add(code([
     '    (pattern, pattern),',
     ').fetchall()',
 ]))
+add(dia("d03-sqli.png",
+        "Figure 3 — The same payload through parameter binding and through string interpolation"))
 add(body(
     "Verification: the classic payload ?q=' OR 1=1-- is treated as a literal search term, so the "
-    "endpoint returns an empty list instead of every row in the table."))
+    "endpoint returns an empty list instead of every row:"))
 add(code([
     "$ curl -s \"http://127.0.0.1:8000/api/data?q=%27%20OR%201%3D1--\" \\",
     "    -H \"Authorization: Bearer $TOKEN\"",
@@ -211,11 +240,10 @@ add(shot("SQL injection attempt returns an empty array (screenshot 08a)"))
 
 add(h2("4.2 Protection against XSS"))
 add(body(
-    "Content is stored exactly as the user typed it and encoded at the moment it is returned. "
-    "Escaping on output is the correct layer for this defence: the same value may later be rendered "
-    "into HTML, into a log file or into a PDF, and only the output context knows which encoding is "
-    "appropriate. Escaping on input would corrupt the stored data and would still be insufficient "
-    "for contexts other than HTML."))
+    "Content is stored exactly as the user typed it and encoded at the moment it is returned. Output "
+    "is the correct layer: the same value may later be rendered into HTML, a log file or a PDF, and "
+    "only the output context knows which encoding applies. Escaping on input would corrupt the stored "
+    "data and still be wrong for every other context."))
 add(code([
     'return jsonify(',
     '    [{key: html.escape(str(row[key])) for key in row.keys()} for row in rows]',
@@ -223,10 +251,8 @@ add(code([
 ]))
 add(body(
     "A stored payload therefore comes back neutralised - the browser receives text, not markup:"))
-add(code([
-    'body: "<script>alert(document.cookie)</script>"     (stored)',
-    'body: "&lt;script&gt;alert(document.cookie)&lt;/script&gt;"   (returned)',
-]))
+add(dia("d04-xss.png",
+        "Figure 4 — Where the payload is neutralised, and the shortcut that is not taken"))
 add(body(
     "Defence in depth is added at the transport level: the response declares "
     "Content-Type: application/json, X-Content-Type-Options: nosniff and a Content-Security-Policy "
@@ -252,6 +278,8 @@ add(code([
     'token = jwt.encode({"sub": row["username"], "iat": ..., "exp": ...},',
     '                   SECRET_KEY, algorithm="HS256")',
 ]))
+add(dia("d05-auth-flow.png",
+        "Figure 5 — The login path: two decisions, one bcrypt comparison, two exits that must look alike"))
 add(body(
     "A decorator guards every protected endpoint. Two details matter for the grade and for real "
     "security: the algorithm is passed as an explicit whitelist on decode, and the signature is "
@@ -265,9 +293,9 @@ add(code([
     '# InvalidTokenError      -> 401 invalid token',
 ]))
 add(body(
-    "The signing key is never committed: it is read from the SECRET_KEY environment variable, and a "
-    "random value is generated when it is absent. The token lifetime is 30 minutes, which bounds the "
-    "damage from a leaked token in a scheme that has no server-side revocation."))
+    "The signing key is never committed - it comes from the SECRET_KEY environment variable, with a "
+    "random fallback. The 30-minute lifetime bounds the damage from a leaked token in a scheme that "
+    "has no server-side revocation."))
 add(table([
     ["Attack", "Control"],
     ["Credential stuffing / offline cracking", "bcrypt, cost 12, per-user salt"],
@@ -294,7 +322,10 @@ add(h1("5. CI/CD pipeline with security scanners"))
 add(body(
     "The pipeline is defined in .github/workflows/ci.yml and runs on every push and on every pull "
     "request. The job is called Tests, SAST, and SCA, and its steps are named after what they do, so "
-    "the run page is readable evidence instead of a list of anonymous shell commands."))
+    "the run page is readable evidence instead of a list of anonymous shell commands. Figure 6 is the "
+    "order of those steps; the table below is what each one is for."))
+add(dia("d06-pipeline.png",
+        "Figure 6 — The CI job: four preparatory steps, four gates, one verdict"))
 add(table([
     ["Step", "What it does", "Why it is there"],
     ["Check out project, set up Python", "checkout, Python 3.11 with a pip cache",
@@ -320,10 +351,9 @@ add(table([
 ], [2300, 4200, 2570]))
 add(body(
     "The smoke test is the part that is easy to omit and expensive to omit. pytest drives the "
-    "application through Flask's test client, which never opens a socket; a suite that is green "
-    "therefore says nothing about whether the process that is actually listening on port 8000 is "
-    "configured the same way. The pipeline starts the real server with the same ephemeral "
-    "configuration and repeats the four requests that matter:"))
+    "application through Flask's test client, which never opens a socket, so a green suite says "
+    "nothing about the process actually listening on port 8000. The pipeline starts the real server "
+    "with the same ephemeral configuration and repeats the four requests that matter:"))
 add(code([
     "12 passed in 9.70s",
     "GET /api/data without a token -> HTTP 401 (expected 401)",
@@ -332,10 +362,9 @@ add(code([
     "GET /api/data?q=' OR 1=1-- -> HTTP 200 (payload treated as a literal)",
 ]))
 add(body(
-    "The last step turns the three machine-readable reports into a written conclusion, which is "
-    "published in the job log and on the run summary page. This is deliberate: a green tick says "
-    "that the commands exited with zero, not that anything was actually verified, so the numbers "
-    "behind the tick are stated explicitly."))
+    "The last step turns the three machine-readable reports into one written conclusion, published in "
+    "the job log and on the run summary page. A green tick only means the commands exited with zero, "
+    "so the numbers behind the tick are stated explicitly."))
 add(code([
     "## Tests, SAST, and SCA - conclusion",
     "",
@@ -364,12 +393,11 @@ add(code([
 ]))
 add(body(
     "One finding had to be handled during this work. The first run reported B105/B106 - \"possible "
-    "hardcoded password: 'Bearer'\" - on the OAuth2 token_type field of the login response, because "
-    "bandit flags any argument, key or variable whose name contains \"token\" when it is bound to a "
-    "string literal. Suppressing the warning with #nosec would have hidden the class of issue the "
-    "scanner exists to find, so the value was moved into a named constant instead. The warning "
-    "disappeared and the scan reports zero skipped lines - which is itself evidence that no finding "
-    "was silenced."))
+    "hardcoded password: 'Bearer'\" - on the token_type field of the login response, because bandit "
+    "flags any name containing \"token\" that is bound to a string literal. Suppressing it with "
+    "#nosec would have hidden the class of issue the scanner exists to find, so the value was moved "
+    "into a named constant instead. The warning disappeared and the scan reports zero skipped lines - "
+    "which is itself evidence that no finding was silenced."))
 add(body(
     "SAST reads the source without executing it and reports the line that contains the risky "
     "construct; SCA compares the resolved dependency tree against vulnerability databases. The two "
@@ -379,9 +407,8 @@ add(shot("GitHub Actions: Tests, SAST and SCA - all steps green (screenshot 01)"
 add(shot("bandit: no issues identified, zero skipped lines (screenshot 02)"))
 add(shot("pip-audit: no known vulnerabilities found (screenshot 03)"))
 add(body(
-    "Note on the figures: screenshots 01-03 were captured before the job was split into the ten "
-    "named steps described above, so the labels inside them are shorter than that list. The log "
-    "quoted in this section is from the current run."))
+    "Note: screenshots 01-03 predate the ten named steps, so their labels are shorter; the log quoted "
+    "above is from the current run."))
 
 
 # ---------------------------------------------------------------- 6 tests
@@ -449,6 +476,8 @@ add(body(
     "engine. The feature is intended for high-trust environments and is disabled by default, so a "
     "request that merely asks for it is rejected. The crafted body asks anyway, and adds one field "
     "that the deserialiser should never have accepted: an object whose key is the empty string."))
+add(dia("d07-attack-chain.png",
+        "Figure 7 — The attack chain: the accepted empty key is the pivot of the whole exploit"))
 add(code([
     "POST /druid/indexer/v1/sampler        Content-Type: application/json",
     "",
@@ -483,10 +512,10 @@ add(code([
     "]}",
 ]))
 add(body(
-    "The process runs as root inside the container, which is the default for the Vulhub image. "
-    "Swapping the command for cat /etc/passwd returns the file content in the same field, which "
-    "proves that the primitive is arbitrary command execution rather than a single-purpose trick: "
-    "whatever the shell can do, the attacker can do, with the privileges of the Druid server."))
+    "The process runs as root inside the container, the Vulhub default. Swapping the command for "
+    "cat /etc/passwd returns the file in the same field, which proves the primitive is arbitrary "
+    "command execution and not a single-purpose trick: whatever the shell can do, the attacker can "
+    "do."))
 add(shot("The sampler executes id and cat /etc/passwd through Rhino (screenshot 05)"))
 
 # ---------------------------------------------------------------- 9 root cause
@@ -496,36 +525,34 @@ add(shot("The sampler executes id and cat /etc/passwd through Rhino (screenshot 
 # patch removes the mechanism. Each one answers "why", not "what".
 add(h1("9. Root cause analysis"))
 add(body(
-    "The defect is not a single mistyped line. It is the combination of a dangerous feature, a broken "
-    "configuration guard and an endpoint that anyone can reach. Five points explain it completely."))
-add(body(
-    "First, the dangerous feature is off by default, and that is the whole security model. Druid's "
-    "JavaScript parsing is disabled unless the operator opts in, so the design assumes that no "
-    "untrusted client can ever reach the engine. The guard is a configuration flag, not an "
-    "authentication check - which means it has to hold absolutely, because nothing else stands "
-    "between the network and the engine."))
-add(body(
-    "Second, an empty key defeats the guard. The parseSpec object is deserialised by Jackson into a "
-    "configuration map. A JSON object whose key is the empty string was accepted and merged into that "
-    "map, overwriting the enabled flag. A single unvalidated map key therefore downgraded a hard "
-    "configuration guarantee into a client-controlled suggestion - which is exactly what CWE-732 "
-    "describes: a critical resource whose permission is assigned by the wrong party."))
-add(body(
-    "Third, the engine has no sandbox. Once enabled, the function field is handed to Rhino, which "
-    "runs inside the JVM and exposes java.lang.Runtime. JavaScript can therefore start native "
-    "processes with the privileges of the server. Nothing about the feature was designed for hostile "
-    "input: it was designed for an operator who trusts the data they are ingesting."))
-add(body(
-    "Fourth, the endpoint is unauthenticated. The sampler route is reachable without credentials, so "
-    "a feature that should be off becomes unauthenticated remote code execution. Even where "
-    "authentication exists, the override would still let any low-privileged user execute commands - "
-    "the broken access control only amplifies the impact, it does not cause it."))
-add(body(
-    "Fifth, the patch confirms the analysis. Version 0.20.1 rejects the empty-key override, so the "
-    "JavaScript feature can no longer be forced on by a request, and the function field is never "
-    "evaluated while the feature is disabled. The fix removes the root cause - the accepted override "
-    "- rather than filtering payloads, which is why the primitive disappears instead of being "
-    "blocked one spelling at a time."))
+    "The defect is not a single mistyped line. It is a chain of five links, each one the reason the "
+    "next becomes possible. Figure 8 is that chain; the sentences below are one link each."))
+add(dia("d08-root-cause.png",
+        "Figure 8 — Five links from a switched-off feature to remote code execution as root"))
+add(bullet(
+    "The feature is off by default, and that flag is the whole security model: JavaScript parsing is "
+    "disabled unless the operator opts in. The guard is a configuration setting, not an "
+    "authentication check, so it has to hold absolutely - nothing else stands between the network and "
+    "the engine."))
+add(bullet(
+    "An empty key defeats the guard. Jackson deserialises parseSpec into a configuration map, and a "
+    "JSON object whose key is the empty string was accepted and merged into it, overwriting the "
+    "enabled flag - a hard guarantee downgraded to a client-controlled suggestion, which is CWE-732: "
+    "a critical resource whose permission is assigned by the wrong party."))
+add(bullet(
+    "The engine has no sandbox. Once enabled, the function field is handed to Rhino, which runs "
+    "inside the JVM with java.lang.Runtime in reach, so JavaScript starts native processes with the "
+    "privileges of the server. The feature was built for an operator who trusts the data, not for "
+    "hostile input."))
+add(bullet(
+    "The endpoint is unauthenticated. The sampler route is reachable without credentials, so a "
+    "feature that should be off becomes unauthenticated remote code execution. Authentication "
+    "elsewhere would not have prevented the override - it would only have narrowed who could send "
+    "it."))
+add(bullet(
+    "The patch confirms the analysis: 0.20.1 rejects the override, so the function is never evaluated "
+    "while the feature is off. The fix removes the mechanism rather than filtering payloads, which is "
+    "why the primitive disappears instead of being blocked one spelling at a time."))
 
 # ---------------------------------------------------------------- 10 fix
 # Grading criterion "correctness and effectiveness of the fix" (1 point).
@@ -545,12 +572,10 @@ add(code([
     "+      dockerfile: Dockerfile     # builds a 0.20.1 image",
 ]))
 add(body(
-    "Why a Dockerfile rather than a plain tag: the official apache/druid:0.20.1 image is built on a "
-    "distroless base that cannot run the start-nano-quickstart launcher - it ships neither bash nor "
-    "perl, which the launcher scripts require. Replacing the whole image would also change the "
-    "launcher, the embedded ZooKeeper and the ports, and the comparison with the vulnerable "
-    "environment would no longer be like for like. The fix therefore keeps the Vulhub 0.20.0 base "
-    "and replaces only the vulnerable jars:"))
+    "A Dockerfile rather than a plain tag: the official apache/druid:0.20.1 image is distroless and "
+    "ships neither bash nor perl, which the quickstart launcher needs. Replacing the whole image "
+    "would also change the launcher, ZooKeeper and ports, so the comparison would no longer be like "
+    "for like. The fix keeps the Vulhub 0.20.0 base and replaces only the vulnerable jars:"))
 add(code([
     "FROM vulhub/apache-druid:0.20.0",
     "RUN rm -f /opt/druid/lib/*-0.20.0.jar /opt/druid/extensions/*/*-0.20.0.jar",
@@ -583,7 +608,9 @@ add(h1("11. Verification of the fix"))
 add(body(
     "The verification replays exactly the request that executed code before, against the patched "
     "server, and then checks that the product still works. The second half is not optional: a fix "
-    "that breaks the service is not a fix."))
+    "that breaks the service is not a fix. Figure 9 is the comparison both versions were run in."))
+add(dia("d09-fix-compare.png",
+        "Figure 9 — The same request against both versions: refusal instead of execution"))
 add(code([
     "$ ./verify_fix.sh http://127.0.0.1:8888",
     "",
@@ -618,13 +645,12 @@ add(shot("Regression: /status reports 0.20.1 and the console answers 302 (screen
 add(h1("12. Conclusion"))
 add(body(
     "The defensive half of the work shows that the three most common failure modes have "
-    "well-understood, cheap remedies: parameterised queries remove SQL injection as a class rather "
-    "than filtering payloads, output encoding removes XSS at the point where the context is known, "
-    "and bcrypt plus a correctly verified JWT removes the weakest links in authentication. The "
-    "pipeline turns those properties into something that is checked on every commit instead of "
-    "promised in a document: the last run audited 9 pinned dependencies, found no issue in 286 lines "
-    "of scanned source, passed 12 tests and answered the four live requests of the smoke test in the "
-    "expected way - and states that verdict in one sentence on the run page."))
+    "cheap remedies: parameterised queries remove SQL injection as a class, output encoding removes "
+    "XSS where the context is known, and bcrypt with a correctly verified JWT closes the weakest "
+    "links in authentication. The pipeline turns those properties into something checked on every "
+    "commit: the last run audited 9 dependencies, found nothing in 286 lines of source, passed 12 "
+    "tests and answered the four live requests as expected - and states that verdict in one "
+    "sentence."))
 add(body(
     "The offensive half shows something different: the Druid defect is not exotic. It is one "
     "unvalidated map key on a feature that was already switched off, and it survived into a widely "
@@ -633,12 +659,11 @@ add(body(
     "that turns a CVE identifier on a website into a verifiable fact about a system - and it is the "
     "same loop a penetration tester or a SOC analyst runs whenever a new advisory lands."))
 add(body(
-    "The limit of what was demonstrated is worth stating. The API is protected against the three "
-    "classes the assignment names, not against every class in the OWASP Top 10: there is no rate "
-    "limiting, no account lockout and no revocation list, and the JWT is stateless by design, so a "
-    "stolen token stays valid for up to thirty minutes. The CVE half proves that a patched version "
-    "refuses the specific request that worked; it does not prove the absence of other ways to reach "
-    "the JavaScript parser. Both are the correct scope for a laboratory exercise, and both are the "
+    "The scope is worth stating. The API is protected against the three classes the assignment "
+    "names, not the whole OWASP Top 10: there is no rate limiting, no account lockout and no "
+    "revocation list, and a stolen token stays valid for up to thirty minutes. The CVE half proves "
+    "that a patched version refuses the request that worked; it does not prove there is no other way "
+    "to reach the JavaScript parser. Both are the right scope for a laboratory exercise, and the "
     "first things to extend in a real deployment."))
 
 # ---------------------------------------------------------------- appendix

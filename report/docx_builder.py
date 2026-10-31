@@ -278,9 +278,14 @@ def shot(caption, image=None):
     # on wp:extent (the layout box the text reflows around) and once on
     # a:ext (the graphic's own size) - they must match or Word scales the image.
     # noChangeAspect locks the ratio while the user drags a corner in Word.
+    # keepNext binds the picture to the caption underneath: without it a figure
+    # that lands at the foot of a page leaves its caption stranded on the next
+    # one. The children of pPr are in schema order (keepNext, spacing, jc),
+    # which is not the same as the order of the arguments in para().
     drawing = (
-        "<w:p><w:pPr><w:jc w:val=\"center\"/>"
-        "<w:spacing w:before=\"120\" w:after=\"40\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>"
+        "<w:p><w:pPr><w:keepNext/>"
+        "<w:spacing w:before=\"120\" w:after=\"40\" w:line=\"240\" w:lineRule=\"auto\"/>"
+        "<w:jc w:val=\"center\"/></w:pPr>"
         "<w:r><w:drawing>"
         "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">"
         f"<wp:extent cx=\"{cx}\" cy=\"{cy}\"/>"
