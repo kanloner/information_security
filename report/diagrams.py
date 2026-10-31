@@ -48,6 +48,10 @@ from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Polygon  # noqa:
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "docs", "diagrams")
 
+# The three reports one CI run uploads as its artifact, kept verbatim so the
+# "verdict" figure can be rebuilt from evidence instead of retyped numbers.
+CI_REPORTS = os.path.join(ROOT, "report", "ci-reports")
+
 # One palette for every figure, so the report looks like one document rather
 # than nine unrelated pictures. The colours match the docx headings (#1F3864)
 # and the table headers (#E8EEF4).
@@ -309,6 +313,53 @@ def fig_pipeline():
 
 
 # ---------------------------------------------------------------- figure 7
+def fig_ci_verdict():
+    """What the last run actually reported, gate by gate.
+
+    The numbers are not typed here as prose: they are read from the three
+    reports that run uploaded as its artifact (kept verbatim in
+    report/ci-reports/), so the figure and the log quoted in the report cannot
+    drift apart without one of them being regenerated.
+    """
+    import json
+    import xml.etree.ElementTree as ET
+
+    def load(name):
+        return open(os.path.join(CI_REPORTS, name), encoding="utf-8").read()
+
+    bandit = json.loads(load("bandit.json"))
+    totals = bandit["metrics"]["_totals"]
+    audit = json.loads(load("pip-audit.json"))
+    deps = audit.get("dependencies", []) if isinstance(audit, dict) else audit
+    vulns = sum(len(dep.get("vulns") or []) for dep in deps)
+
+    root = ET.fromstring(load("pytest.xml"))
+    suite = root.find("testsuite") if root.tag == "testsuites" else root
+    tests = int(suite.get("tests", 0) or 0)
+    seconds = sum(float(c.get("time", 0) or 0) for c in root.iter("testcase"))
+
+    fig, ax = canvas(10, 3.5, (0, 100), (0, 38))
+    gates = [
+        node(ax, 15, 27, 26, 16, "bandit · SAST",
+             f"{len(bandit['results'])} findings\n"
+             f"{totals['loc']} lines · {totals['nosec']} #nosec", "ok", fs=9.4, sfs=7.8),
+        node(ax, 50, 27, 26, 16, "pip-audit · SCA",
+             f"{len(deps)} pinned dependencies\n{vulns} known vulnerabilities",
+             "ok", fs=9.4, sfs=7.8),
+        node(ax, 85, 27, 26, 16, "pytest",
+             f"{tests} tests passed\n{seconds:.1f} s · 4 live probes", "ok",
+             fs=9.4, sfs=7.8),
+    ]
+    verdict = node(ax, 50, 8, 88, 11,
+                   "every control held - the build is safe to merge",
+                   "read from bandit.json, pip-audit.json and pytest.xml, not from exit codes",
+                   "ok", fs=9.6, sfs=7.6)
+    for box, x in zip(gates, (40, 50, 60)):
+        arrow(ax, B(box), (x, T(verdict)[1]))
+    return save(fig, "d07-ci-verdict.png")
+
+
+# ---------------------------------------------------------------- figure 8
 def fig_attack():
     """The CVE-2021-25646 chain, with the empty key as the pivot."""
     fig, ax = canvas(10, 5.2, (0, 100), (0, 54))
@@ -333,7 +384,7 @@ def fig_attack():
         arrow(ax, L(a), R(b))
     ax.text(50, 5, "one unvalidated map key turns a disabled feature into remote code execution",
             fontsize=8.8, color=INK, ha="center", va="center", fontweight="bold")
-    return save(fig, "d07-attack-chain.png")
+    return save(fig, "d08-attack-chain.png")
 
 
 # ---------------------------------------------------------------- figure 8
@@ -352,7 +403,7 @@ def fig_fix_compare():
     arrow(ax, B(fixed), T(out2), "", color="#4C7A56")
     ax.text(50, 2, "same base image, launcher and ports — the only variable is the jar version",
             fontsize=8.4, color=MUTE, ha="center", va="center", style="italic")
-    return save(fig, "d09-fix-compare.png")
+    return save(fig, "d10-fix-compare.png")
 
 
 # ---------------------------------------------------------------- figure 9
@@ -387,21 +438,22 @@ def fig_root_cause():
                 fontsize=9, color="#A5433B", fontweight="bold", va="center",
                 ha="left",
                 arrowprops=dict(arrowstyle="-|>", color="#A5433B", lw=1.2))
-    return save(fig, "d08-root-cause.png")
+    return save(fig, "d09-root-cause.png")
 
 
 # Listed in the order the report presents them, which is also the order of the
-# file names (d01 ... d09) and of the figure numbers in the captions.
+# file names (d01 ... d10) and of the figure numbers in the captions.
 FIGURES = [
-    fig_lifecycle,      # Figure 1 - section 1
-    fig_request_path,   # Figure 2 - section 3
-    fig_sqli,           # Figure 3 - section 4.1
-    fig_xss,            # Figure 4 - section 4.2
-    fig_auth_flow,      # Figure 5 - section 4.3
-    fig_pipeline,       # Figure 6 - section 5
-    fig_attack,         # Figure 7 - section 8
-    fig_root_cause,     # Figure 8 - section 9
-    fig_fix_compare,    # Figure 9 - section 11
+    fig_lifecycle,      # Figure 1  - section 1
+    fig_request_path,   # Figure 2  - section 3
+    fig_sqli,           # Figure 3  - section 4.1
+    fig_xss,            # Figure 4  - section 4.2
+    fig_auth_flow,      # Figure 5  - section 4.3
+    fig_pipeline,       # Figure 6  - section 5
+    fig_ci_verdict,     # Figure 7  - section 5
+    fig_attack,         # Figure 8  - section 8
+    fig_root_cause,     # Figure 9  - section 9
+    fig_fix_compare,    # Figure 10 - section 11
 ]
 
 

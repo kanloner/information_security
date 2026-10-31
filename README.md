@@ -259,8 +259,8 @@ pipeline is meant to be *audited*, not just executed. The smoke test matters: th
 tests use Flask's test client, which bypasses the socket, so "12 green tests" alone
 would not prove that the deployed server enforces the same rules.
 
-Last successful run (commit `ab2f068`, all 13 rows green, 39 s):
-**[github.com/kanloner/information_security/actions/runs/39544635930](https://github.com/kanloner/information_security/actions/runs/39544635930)**
+Last successful run (commit `42d434c`, every step green, 41 s):
+**[github.com/kanloner/information_security/actions/runs/41215240736](https://github.com/kanloner/information_security/actions/runs/41215240736)**
 
 The run ends with a conclusion instead of a wall of log lines:
 
@@ -269,7 +269,7 @@ The run ends with a conclusion instead of a wall of log lines:
 
 - **bandit (SAST)**: 0 finding(s) - none
 - **pip-audit (SCA)**: 9 pinned dependencies audited, 0 known vulnerability(ies)
-- **pytest**: 12 tests, 0 failures, 0 errors (9.3s of test time)
+- **pytest**: 12 tests, 0 failures, 0 errors (9.4s of test time)
 
 **Conclusion:** every control held - the build is safe to merge.
 ```
@@ -277,7 +277,7 @@ The run ends with a conclusion instead of a wall of log lines:
 and the behavioural part of that conclusion is visible in the step above it:
 
 ```
-12 passed in 9.70s
+12 passed in 9.88s
 GET /api/data without a token -> HTTP 401 (expected 401)
 POST /auth/login -> token issued (147 characters)
 GET /api/data with a token -> HTTP 200 (expected 200)
@@ -286,31 +286,26 @@ GET /api/data?q=' OR 1=1-- -> HTTP 200 (payload treated as a literal)
 
 ![GitHub Actions - Tests, SAST and SCA all green](docs/screenshots/01-ci-green.png)
 
-![bandit - no issues identified](docs/screenshots/02-bandit.png)
+Screenshot 01 is the run page of an earlier revision, captured before the job was split
+into the ten named steps above, so its labels are shorter than that list. The numbers
+quoted here are from the current run; its three machine-readable reports are committed
+verbatim under `report/ci-reports/`, so the verdict can be recounted without downloading
+the artifact.
 
-![pip-audit - no known vulnerabilities found](docs/screenshots/03-pip-audit.png)
-
-`02-bandit.png` shows the `security-reports` artifact of a pipeline run and
-`03-pip-audit.png` the SCA step of the same job. They were captured before the job was
-split into the ten named steps listed above, so the labels inside them are shorter than
-that list; the log of the current run is quoted in full above.
-
-The same three commands were also executed locally before the first online run, so the
-expected result of every step was known in advance:
+bandit writes JSON rather than console text, so the two numbers that make its verdict
+checkable come from the report itself - how much was scanned, and how much was
+suppressed:
 
 ```
-$ bandit app.py init_db.py create_user.py -f txt
-	Total lines of code: 286
-	Total lines skipped (#nosec): 0
-	No issues identified.
-
-$ pip-audit -r requirements.txt
-No known vulnerabilities found
-
-$ pytest -q
-............                                                             [100%]
-12 passed in 8.57s
+Scanned file        lines of code   skipped (#nosec)   findings
+app.py                        139                  0          0
+init_db.py                     89                  0          0
+create_user.py                 58                  0          0
+total                         286                  0          0
 ```
+
+Zero skipped lines in all three files is the part worth reading twice: the clean result
+was not obtained by silencing the scanner.
 
 One finding had to be handled during the work: the first scan reported B105/B106
 ("possible hardcoded password: 'Bearer'") on the OAuth2 `token_type` field, because
@@ -497,16 +492,18 @@ The regression check also queries `GET /status`, which reports
 
 | File | Content |
 |---|---|
-| `01-ci-green.png` | Actions page, last run with all steps green |
-| `02-bandit.png` | bandit output: `No issues identified` |
-| `03-pip-audit.png` | pip-audit: `No known vulnerabilities found` |
+| `01-ci-green.png` | Actions page, first run with every step green |
+| `02-bandit.png` | bandit panel of that same early run; superseded by `report/ci-reports/bandit.json` |
+| `03-pip-audit.png` | pip-audit panel of that same early run; superseded by `report/ci-reports/pip-audit.json` |
 | `04-docker-ps.png` | `docker compose ps` — vulnerable container running |
 | `05-druid-rce.png` | the sampler executes `id` and `cat /etc/passwd` as root |
 | `06-druid-fixed.png` | the same request after the fix: `JavaScript is disabled` |
 | `07-druid-regression.png` | regression: `/status` reports 0.20.1, console `302` |
 | `08-api-demo.png` | 401 / 200 / SQLi `[]` / escaped XSS / security headers |
+| `08a-sqli.png` | the injection payload returns an empty array |
+| `08b-xss.png` | the stored payload comes back escaped |
 | `09-repo.png` | public repository page |
-| `10-pytest.png` | `pytest -q` — 11 passed |
+| `10-pytest.png` | `pytest -q` — 11 passed (the suite has since grown to 12) |
 
 ---
 

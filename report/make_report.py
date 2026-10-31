@@ -355,7 +355,7 @@ add(body(
     "nothing about the process actually listening on port 8000. The pipeline starts the real server "
     "with the same ephemeral configuration and repeats the four requests that matter:"))
 add(code([
-    "12 passed in 9.70s",
+    "12 passed in 9.88s",
     "GET /api/data without a token -> HTTP 401 (expected 401)",
     "POST /auth/login -> token issued (147 characters)",
     "GET /api/data with a token -> HTTP 200 (expected 200)",
@@ -370,27 +370,27 @@ add(code([
     "",
     "- bandit (SAST): 0 finding(s) - none",
     "- pip-audit (SCA): 9 pinned dependencies audited, 0 known vulnerability(ies)",
-    "- pytest: 12 tests, 0 failures, 0 errors (9.3 s of test time)",
+    "- pytest: 12 tests, 0 failures, 0 errors (9.4 s of test time)",
     "",
     "Conclusion: every control held - the build is safe to merge.",
 ]))
 add(body(
-    "The same three commands were also run locally before the first online run, so the expected "
-    "result of every step was known in advance:"))
-add(code([
-    "$ bandit app.py init_db.py create_user.py -f txt",
-    "        Total lines of code: 286",
-    "        Total lines skipped (#nosec): 0",
-    "Test results:",
-    "        No issues identified.",
-    "",
-    "$ pip-audit -r requirements.txt",
-    "No known vulnerabilities found",
-    "",
-    "$ pytest -q",
-    "............                                             [100%]",
-    "12 passed in 8.57s",
-]))
+    "Because bandit writes JSON instead of console text, the two numbers that make its verdict "
+    "checkable are read from the report itself - how much was scanned, and how much was suppressed:"))
+add(table([
+    ["Scanned file", "lines of code", "lines skipped (#nosec)", "findings"],
+    ["app.py", "139", "0", "0"],
+    ["init_db.py", "89", "0", "0"],
+    ["create_user.py", "58", "0", "0"],
+    ["total", "286", "0", "0"],
+], [3200, 1850, 2400, 1620]))
+add(body(
+    "Zero skipped lines in each of the three files is the part worth reading twice: it means the "
+    "clean result was not obtained by silencing the scanner. The three reports are kept verbatim in "
+    "report/ci-reports/ and are also downloadable from the run page as the security-reports "
+    "artifact."))
+add(dia("d07-ci-verdict.png",
+        "Figure 7 — What the last run reported, gate by gate, read from its uploaded reports"))
 add(body(
     "One finding had to be handled during this work. The first run reported B105/B106 - \"possible "
     "hardcoded password: 'Bearer'\" - on the token_type field of the login response, because bandit "
@@ -404,11 +404,11 @@ add(body(
     "are complementary: a perfectly written application can still import a library with a critical "
     "CVE, and a dependency scan will never notice a missing authorisation check in your own code."))
 add(shot("GitHub Actions: Tests, SAST and SCA - all steps green (screenshot 01)"))
-add(shot("bandit: no issues identified, zero skipped lines (screenshot 02)"))
-add(shot("pip-audit: no known vulnerabilities found (screenshot 03)"))
 add(body(
-    "Note: screenshots 01-03 predate the ten named steps, so their labels are shorter; the log quoted "
-    "above is from the current run."))
+    "Screenshot 01 is the run page of the first run of the workflow, captured before the job was "
+    "split into the ten named steps, so its labels are shorter and its timings differ. The numbers "
+    "quoted in this section, and Figure 7, are from run 41215240736 of 31 October 2026, which "
+    "reached the same verdict and whose reports are kept in report/ci-reports/."))
 
 
 # ---------------------------------------------------------------- 6 tests
@@ -476,8 +476,8 @@ add(body(
     "engine. The feature is intended for high-trust environments and is disabled by default, so a "
     "request that merely asks for it is rejected. The crafted body asks anyway, and adds one field "
     "that the deserialiser should never have accepted: an object whose key is the empty string."))
-add(dia("d07-attack-chain.png",
-        "Figure 7 — The attack chain: the accepted empty key is the pivot of the whole exploit"))
+add(dia("d08-attack-chain.png",
+        "Figure 8 — The attack chain: the accepted empty key is the pivot of the whole exploit"))
 add(code([
     "POST /druid/indexer/v1/sampler        Content-Type: application/json",
     "",
@@ -526,9 +526,9 @@ add(shot("The sampler executes id and cat /etc/passwd through Rhino (screenshot 
 add(h1("9. Root cause analysis"))
 add(body(
     "The defect is not a single mistyped line. It is a chain of five links, each one the reason the "
-    "next becomes possible. Figure 8 is that chain; the sentences below are one link each."))
-add(dia("d08-root-cause.png",
-        "Figure 8 — Five links from a switched-off feature to remote code execution as root"))
+    "next becomes possible. Figure 9 is that chain; the sentences below are one link each."))
+add(dia("d09-root-cause.png",
+        "Figure 9 — Five links from a switched-off feature to remote code execution as root"))
 add(bullet(
     "The feature is off by default, and that flag is the whole security model: JavaScript parsing is "
     "disabled unless the operator opts in. The guard is a configuration setting, not an "
@@ -608,9 +608,9 @@ add(h1("11. Verification of the fix"))
 add(body(
     "The verification replays exactly the request that executed code before, against the patched "
     "server, and then checks that the product still works. The second half is not optional: a fix "
-    "that breaks the service is not a fix. Figure 9 is the comparison both versions were run in."))
-add(dia("d09-fix-compare.png",
-        "Figure 9 — The same request against both versions: refusal instead of execution"))
+    "that breaks the service is not a fix. Figure 10 is the comparison both versions were run in."))
+add(dia("d10-fix-compare.png",
+        "Figure 10 — The same request against both versions: refusal instead of execution"))
 add(code([
     "$ ./verify_fix.sh http://127.0.0.1:8888",
     "",
@@ -675,7 +675,8 @@ add(table([
     ["Item", "Location"],
     ["Public git repository", "https://github.com/kanloner/information_security"],
     ["Last successful pipeline run",
-     "https://github.com/kanloner/information_security/actions/runs/39544635930"],
+     "https://github.com/kanloner/information_security/actions/runs/41215240736"],
+    ["Run reports behind Figure 7", "report/ci-reports/ (bandit.json, pip-audit.json, pytest.xml)"],
     ["Application source", "app.py, init_db.py, create_user.py"],
     ["Pipeline definition", ".github/workflows/ci.yml"],
     ["Tests", "tests/test_api.py (12 tests)"],
@@ -683,7 +684,8 @@ add(table([
     ["Reproduction script", "cve/CVE-2021-25646/reproduce.sh"],
     ["Fix verification script", "cve/CVE-2021-25646/verify_fix.sh"],
     ["Fixed configuration (folder with fixes)", "fixes/Dockerfile + fixes/docker-compose.yml"],
-    ["Screenshots", "docs/screenshots/ (10 files)"],
+    ["Screenshots", "docs/screenshots/ (12 files)"],
+    ["Generated figures", "docs/diagrams/ (10 files), drawn by report/diagrams.py"],
 ], [4200, 4870]))
 add(para(
     "Variant: CVE-2021-25646. Student: Zhaohan Liao, HDU number 23320330.",
