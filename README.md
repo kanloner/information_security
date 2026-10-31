@@ -259,7 +259,7 @@ pipeline is meant to be *audited*, not just executed. The smoke test matters: th
 tests use Flask's test client, which bypasses the socket, so "12 green tests" alone
 would not prove that the deployed server enforces the same rules.
 
-Last successful run (commit `42d434c`, every step green, 41 s):
+Reference run (commit `42d434c`, every step green, 41 s):
 **[github.com/kanloner/information_security/actions/runs/41215240736](https://github.com/kanloner/information_security/actions/runs/41215240736)**
 
 The run ends with a conclusion instead of a wall of log lines:

@@ -390,7 +390,7 @@ add(body(
     "report/ci-reports/ and are also downloadable from the run page as the security-reports "
     "artifact."))
 add(dia("d07-ci-verdict.png",
-        "Figure 7 — What the last run reported, gate by gate, read from its uploaded reports"))
+        "Figure 7 — What run 41215240736 reported, gate by gate, read from its uploaded reports"))
 add(body(
     "One finding had to be handled during this work. The first run reported B105/B106 - \"possible "
     "hardcoded password: 'Bearer'\" - on the token_type field of the login response, because bandit "
@@ -648,8 +648,8 @@ add(body(
     "cheap remedies: parameterised queries remove SQL injection as a class, output encoding removes "
     "XSS where the context is known, and bcrypt with a correctly verified JWT closes the weakest "
     "links in authentication. The pipeline turns those properties into something checked on every "
-    "commit: the last run audited 9 dependencies, found nothing in 286 lines of source, passed 12 "
-    "tests and answered the four live requests as expected - and states that verdict in one "
+    "commit: each run audits 9 dependencies, finds nothing in 286 lines of source, passes 12 "
+    "tests and answers the four live requests as expected - and states that verdict in one "
     "sentence."))
 add(body(
     "The offensive half shows something different: the Druid defect is not exotic. It is one "
@@ -674,7 +674,7 @@ add(h1("Appendix A. Submitted material"))
 add(table([
     ["Item", "Location"],
     ["Public git repository", "https://github.com/kanloner/information_security"],
-    ["Last successful pipeline run",
+    ["Reference pipeline run",
      "https://github.com/kanloner/information_security/actions/runs/41215240736"],
     ["Run reports behind Figure 7", "report/ci-reports/ (bandit.json, pip-audit.json, pytest.xml)"],
     ["Application source", "app.py, init_db.py, create_user.py"],
