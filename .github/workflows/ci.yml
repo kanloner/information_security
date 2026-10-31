@@ -1,0 +1,277 @@
+name: security-ci
+
+# Runs on every push and on every pull request, as required by the lab manual.
+on: [push, pull_request]
+
+permissions:
+  # Least privilege: the job only reads the repository. Without this block the
+  # default token can write (push, create releases), which a scanner or a
+  # compromised step could abuse.
+  contents: read
+
+jobs:
+  tests-sast-sca:
+    name: Tests, SAST, and SCA
+    runs-on: ubuntu-latest
+    # A hung server or a network stall would otherwise hold a runner for the
+    # platform maximum (6 h). Ten minutes is far above the real ~1 min run.
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        # The project lives in secure-api/; the workflow itself must sit at the
+        # repository root because GitHub Actions only reads .github/workflows
+        # from there.
+        working-directory: secure-api
+
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          # cache: pip reuses the wheel cache between runs. The key is the hash
+          # of the dependency file, so a changed requirement invalidates it.
+          cache: pip
+          cache-dependency-path: secure-api/requirements.txt
+
+      - name: Install application and security tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install bandit pip-audit pytest
+          # Import check: proves the wheels really installed and are importable
+          # before the tests fail twenty seconds later with a confusing error.
+          python -c "import flask, jwt, bcrypt; print('runtime imports ok')"
+          # Printing the scanner versions makes the run self-documenting: a
+          # change in findings can then be attributed to a version bump.
+          bandit --version | head -n 1
+          pip-audit --version
+
+      # An ephemeral secret and a database in the runner's temp directory, so a
+      # developer's local configuration can never leak into CI and the job
+      # leaves no state behind on the runner.
+      - name: Prepare isolated CI configuration
+        run: |
+          mkdir -p reports
+          # umask 077: the file is created as 0600, because it contains the
+          # signing key that every token of this run depends on.
+          umask 077
+          # A throwaway secret per run, and the database in $RUNNER_TEMP so it
+          # is removed with the runner instead of being uploaded as an artifact.
+          {
+            printf "SECRET_KEY='%s'\n" "$(python -c 'import secrets; print(secrets.token_hex(32))')"
+            printf "DB_PATH='%s'\n" "$RUNNER_TEMP/ci.db"
+            printf "DB_JOURNAL_MODE='%s'\n" "memory"
+          } > .env.ci
+          echo "ephemeral configuration written to .env.ci"
+          # The key must never reach the log, so the echoed copy is redacted
+          # with sed before it is printed.
+          sed 's/^SECRET_KEY=.*/SECRET_KEY=<generated, 64 hex characters>/' .env.ci
+
+      - name: Run API and security regression tests
+        run: |
+          # set -a ("allexport") makes every variable defined by the sourced
+          # file an *exported* environment variable. Without it the values
+          # would be shell-local and the python subprocesses would fall back to
+          # a random SECRET_KEY per process - the login token from one step and
+          # the verification in another would no longer agree.
+          set -a; . ./.env.ci; set +a
+
+          # 1. The regression suite: one test per security property.
+          #    --junitxml is what the summary step parses later.
+          python -m pytest -q --junitxml=reports/pytest.xml
+
+          # 2. Smoke test of the running service: the suite above uses Flask's
+          #    test client, this proves the real server answers the same way.
+          #    "&" backgrounds it; $! is its PID, and the trap kills it on exit
+          #    (including on failure) so the runner is never left with a
+          #    process holding port 8000.
+          python app.py > reports/server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          CODE=""
+          # Poll instead of "sleep 5": the server needs a variable amount of
+          # time to bind the port, and the first request may legitimately fail.
+          # 40 x 0.5 s caps the wait at 20 s.
+          for _ in $(seq 1 40); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/data || true)
+            if [ "$CODE" = "401" ]; then break; fi
+            sleep 0.5
+          done
+          echo "GET /api/data without a token -> HTTP $CODE (expected 401)"
+          # "::error::" is the workflow-command syntax that renders the message
+          # as an annotation on the run page; "exit 1" is what actually fails
+          # the job.
+          if [ "$CODE" != "401" ]; then echo "::error::access control failed without a token"; exit 1; fi
+
+          # Parsing the JSON with python keeps the step readable and avoids a
+          # jq dependency on the runner image.
+          TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"alice","password":"Alice123!"}' \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+          # ${#TOKEN} is the string length - evidence that something real was
+          # issued, without printing the credential itself into the log.
+          echo "POST /auth/login -> token issued (${#TOKEN} characters)"
+
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/data)
+          echo "GET /api/data with a token -> HTTP $CODE (expected 200)"
+          if [ "$CODE" != "200" ]; then echo "::error::authorised access failed with a valid token"; exit 1; fi
+
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000/api/data?q=%27%20OR%201%3D1--" \
+            -H "Authorization: Bearer $TOKEN")
+          echo "GET /api/data?q=' OR 1=1-- -> HTTP $CODE (payload treated as a literal)"
+          # 200 (not 500) is the expected answer: a bound parameter makes the
+          # payload a harmless search term. A 500 here would mean the string was
+          # spliced into the SQL and the statement broke - i.e. injection.
+          if [ "$CODE" != "200" ]; then echo "::error::injection payload caused a server error"; exit 1; fi
+
+      - name: SAST - scan application source with Bandit
+        run: |
+          # -f json -o file: machine-readable output for the summary step. The
+          # three sources are listed explicitly (not ".") so the scan covers
+          # exactly the application and not .venv/ or the test fixtures.
+          python -m bandit app.py init_db.py create_user.py -f json -o reports/bandit.json
+          echo "bandit report written to reports/bandit.json"
+
+      - name: SCA - audit application dependencies
+        run: |
+          # First pass writes the JSON for the summary; the second prints the
+          # human-readable table so the log itself shows the result even if the
+          # artifact is never downloaded.
+          python -m pip_audit -r requirements.txt -f json -o reports/pip-audit.json
+          python -m pip_audit -r requirements.txt --progress-spinner off
+
+      # Turns the three machine-readable reports into one human-readable
+      # conclusion, both in the job log and on the run's Summary page.
+      #
+      # if: always() matters: without it this step is skipped as soon as an
+      # earlier step fails, which is exactly the moment its verdict is needed.
+      - name: Summarize results
+        if: always()
+        run: |
+          # <<'PY' keeps the heredoc literal: no $ substitution inside, so the
+          # Python f-strings and ${...} never collide with the shell.
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          reports = pathlib.Path("reports")
+          lines = ["## Tests, SAST, and SCA - conclusion", ""]
+          # One flag for the whole verdict. Every section ORs its own failure
+          # into it, so the conclusion cannot accidentally report success when
+          # one report is missing or one scanner found something.
+          blocked = False
+
+          # ---- SAST: bandit -------------------------------------------------
+          bandit_file = reports / "bandit.json"
+          if bandit_file.exists():
+              # "results" is the list of findings; the rest of the report holds
+              # the metrics and the scanned file list.
+              results = json.loads(bandit_file.read_text()).get("results", [])
+              by_severity = {}
+              for issue in results:
+                  key = issue.get("issue_severity", "UNKNOWN")
+                  by_severity[key] = by_severity.get(key, 0) + 1
+              detail = ", ".join(f"{k}: {v}" for k, v in sorted(by_severity.items())) or "none"
+              lines.append(f"- **bandit (SAST)**: {len(results)} finding(s) - {detail}")
+              # Only the first five locations are listed: the summary is meant
+              # to be readable, the full list is in the JSON artifact.
+              for issue in results[:5]:
+                  location = f"{issue.get('filename')}:{issue.get('line_number')}"
+                  lines.append(
+                      f"  - `{issue.get('test_id')}` {issue.get('issue_severity')} - "
+                      f"{issue.get('issue_text')} ({location})"
+                  )
+              blocked = blocked or bool(results)
+          else:
+              lines.append("- **bandit (SAST)**: report missing")
+              blocked = True
+
+          # ---- SCA: pip-audit ----------------------------------------------
+          audit_file = reports / "pip-audit.json"
+          if audit_file.exists():
+              audit = json.loads(audit_file.read_text())
+              # pip-audit's JSON shape changed across versions: older releases
+              # wrote a bare list of dependencies, newer ones wrap it in an
+              # object with a "dependencies" key. Accepting both keeps the step
+              # working when the tool is upgraded.
+              deps = audit.get("dependencies", []) if isinstance(audit, dict) else audit
+              vulns = []
+              for dep in deps:
+                  for vuln in dep.get("vulns") or []:
+                      vulns.append((dep.get("name"), vuln.get("id")))
+              lines.append(
+                  f"- **pip-audit (SCA)**: {len(deps)} pinned dependencies audited, "
+                  f"{len(vulns)} known vulnerability(ies)"
+              )
+              for name, vuln_id in vulns[:5]:
+                  lines.append(f"  - {vuln_id} in {name}")
+              blocked = blocked or bool(vulns)
+          else:
+              lines.append("- **pip-audit (SCA)**: report missing")
+              blocked = True
+
+          # ---- tests: pytest junit ------------------------------------------
+          junit_file = reports / "pytest.xml"
+          if junit_file.exists():
+              root = ET.parse(junit_file).getroot()
+              # pytest writes <testsuites><testsuite .../></testsuites>, but a
+              # single suite may also be the root element. Both are handled so
+              # the parser does not depend on the pytest version.
+              suite = root.find("testsuite") if root.tag == "testsuites" else root
+              # int(x or 0): a missing attribute would otherwise raise, and the
+              # summary must never be the reason a run fails.
+              get = lambda name: int(suite.get(name, 0) or 0)
+              tests, failures, errors = get("tests"), get("failures"), get("errors")
+              # Time is summed over the individual <testcase> elements because
+              # the suite's "time" includes collection overhead and is absent in
+              # some generators.
+              seconds = sum(float(s.get("time", 0) or 0) for s in root.iter("testcase"))
+              lines.append(
+                  f"- **pytest**: {tests} tests, {failures} failures, {errors} errors "
+                  f"({seconds:.1f}s of test time)"
+              )
+              blocked = blocked or bool(failures or errors)
+          else:
+              lines.append("- **pytest**: report missing")
+              blocked = True
+
+          lines.append("")
+          lines.append(
+              "**Conclusion:** every control held - the build is safe to merge."
+              if not blocked
+              else "**Conclusion:** at least one check failed - the build must not be merged."
+          )
+
+          text = "\n".join(lines) + "\n"
+          print(text)
+          # GITHUB_STEP_SUMMARY is a file path exported by the runner; whatever
+          # is written there becomes the run's summary page (Markdown). It is
+          # absent outside Actions, hence the guard.
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              pathlib.Path(summary).write_text(text, encoding="utf-8")
+          PY
+
+      - name: Save test and security reports
+        # if: always() so the evidence is uploaded even (especially) when a
+        # check failed - a failed run is exactly when the artifact is needed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: secure-api/reports/
+          # warn instead of fail: a missing report is already reported by the
+          # summary step, and failing here would hide the real error.
+          if-no-files-found: warn
+          # Artifacts count against the account quota; two weeks is enough for
+          # a course to be graded.
+          retention-days: 14
